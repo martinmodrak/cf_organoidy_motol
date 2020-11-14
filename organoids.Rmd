@@ -50,8 +50,9 @@ read_patient_data <- function(ID) {
   do.call(rbind, data_list)
 }
 
+fsk_levels <- 5 * (1/2.5)^(7:0)
 
-mix_mapping <- data.frame(mix = c(as.character(1:8), letters[1:8]), fsk_concentration = rep(5 * (1/2.5)^(7:0), 2),
+mix_mapping <- data.frame(mix = c(as.character(1:8), letters[1:8]), fsk_concentration = rep(fsk_levels, 2),
                           has_770 = c(rep(FALSE, 8), rep(TRUE, 8)))
 
 well_mapping_2_2 <- data.frame(well = 1:96,
@@ -62,6 +63,7 @@ well_mapping_2_2 <- data.frame(well = 1:96,
                            #has_661 = c(rep(c(rep(FALSE, 16), rep(TRUE, 16)), 2), rep(FALSE, 24), rep(TRUE, 8)),
                            #has_445 = c(rep(16, FALSE)
                            p = c(rep("P1", 32), rep("P2", 32), rep("Other", 32)),
+                           replicate = rep(letters[1:2], 48),
                            type = c(rep("Symkevi", 16), rep("Kaftrio", 16), rep("Symkevi", 16), rep("Kaftrio", 16), rep("FskOnly", 16), rep("Other", 16)),
                            origin = c(rep("patient", 64), rep("ref114", 16), rep("ref117", 16))
                            ) %>% 
@@ -69,12 +71,16 @@ well_mapping_2_2 <- data.frame(well = 1:96,
 
 well_mapping_1_3 <- well_mapping_2_2 %>%
   mutate(type = if_else(well >= 33 & well <= 48, "Kaftrio", type),
-         p = if_else(well >= 33 & well <= 48, "P1", p))
+         p = if_else(well >= 33 & well <= 48, "raw_data", p))
 
 well_mapping <- rbind( 
   well_mapping_1_3 %>% mutate(mapping = "1_3"),
   well_mapping_2_2 %>% mutate(mapping = "2_2")
-  )
+  ) %>% 
+  mutate(
+    type = factor(type, levels = c("FskOnly", "Symkevi", "Kaftrio")),
+    fsk_label = factor(fsk_concentration, levels = fsk_levels, labels = as.character(round(fsk_levels, 3)))
+    )
 
 all_patients <- list()
 for(ID in list.dirs("DATA/", full.names = FALSE, recursive = FALSE)) {
@@ -85,7 +91,7 @@ map_1_3_files <- c("04-CF 20200820.xlsx", "21-CF 20200813.xlsx", "41-CF 20200820
                    "41-CF 20200813.xlsx", "58-CF 20200813.xlsx", "59-CF 20200813.xlsx"
                    )
 
-p1 <- do.call(rbind, all_patients) %>% 
+raw_data <- do.call(rbind, all_patients) %>% 
   mutate(mapping = if_else(filename %in% map_1_3_files, "1_3", "2_2")) %>%
   inner_join(well_mapping, by = c("well", "mapping")) %>%
   filter(!is.na(area), area != 0)
@@ -94,37 +100,51 @@ p1 <- do.call(rbind, all_patients) %>%
 
 ```{r}
 # Quick hack, should be resolved later
-p1 <- p1 %>% filter(!(well == 48 & patient == "04-CF" & date == ymd("20200820")),
+raw_data <- raw_data %>% filter(!(well == 48 & patient == "04-CF" & date == ymd("20200820")),
                     !(well == 64 & patient == "21-CF" & date == ymd("20200918")),
                     !(well %in% c(40, 45) & patient == "68-CF" & date == ymd("20201021")),
                     !(well %in% c(17, 48) & filename == "41-CF 20200820.xlsx"),
                     !(well >= 33 & well <= 72 & filename == "64-CF 20201002.xlsx")
                     )
-# Another quick hack
-#p1 <- p1 %>% filter(!(patient %in% c("21-CF", "41-CF", "68-CF", "58-CF","59-CF", "64-CF")))
 
-# Those should show empty results
-p1 %>% group_by(patient, date, well) %>% summarise(count = n(), .groups = "drop") %>% filter(count != 7)
 
-p1 %>% group_by(patient, origin, type, date, fsk_concentration, filename) %>% summarise(count = n(), .groups = "drop") %>% 
+missing_timepoints <-  raw_data %>% group_by(patient, date, well) %>% summarise(count = n(), .groups = "drop") %>% filter(count != 7)
+if(nrow(missing_timepoints) > 0) {
+  print(missing_timepoints)
+  stop("Missing timepoints")
+}
+
+missing_duplicates <- raw_data %>% group_by(patient, origin, type, date, fsk_concentration, filename) %>% summarise(count = n(), .groups = "drop") %>% 
   filter(count != 14,
 # For some, this is indeed the case                                                                                                         
       filename != "21-CF 20200918.xlsx" & type != "Symkevi" & fsk_concentration != 0.02048
       )
 
-p1 %>% select(patient, origin, type, date, p,  fsk_concentration) %>% distinct() %>% 
+if(nrow(missing_duplicates) > 0) {
+  print(missing_duplicates)
+  stop("Missing duplicates")
+}
+
+
+missing_concentrations <- raw_data %>% select(patient, origin, type, date, p,  fsk_concentration) %>% distinct() %>% 
   group_by(patient, origin, type, date, p) %>%
   summarise(count = n(), .groups = "drop") %>% filter((origin != "patient" & count != 4) | (origin == "patient"  & count != 8))
+
+if(nrow(missing_concentrations) > 0) {
+  print(missing_concentrations)
+  stop("Missing concentrations")
+}
 ```
+
 ```{r}
-p1 <- p1 %>%   
+raw_data <- raw_data %>%   
   arrange(patient, date, well, time) %>%
   group_by(patient, date, well) %>%
   mutate(base_area = area[time == 0], 
          swell = 100 * area / base_area - 100) %>%
   ungroup()
 
-auc <- p1 %>%
+auc <- raw_data %>%
   group_by(patient, date, well, filename, mapping) %>%
   summarise(auc = sum((time[2:7] - time[1:6]) * (swell[1:6] + swell[2:7]) / 2), .groups = "drop") %>%
   inner_join(well_mapping, by = c("well", "mapping"))
@@ -134,11 +154,12 @@ auc <- p1 %>%
 
 
 ```
+
 ```{r}
 # Check matching to original summaries
 
 auc_date_avg <- auc %>%
-  group_by(patient, date, fsk_concentration, type) %>% 
+  group_by(patient, date, fsk_concentration, fsk_label, type,filename) %>% 
   summarise(date_avg_auc = mean(auc), .groups = "drop")
 
 auc_pat_avg <- auc_date_avg %>%   
@@ -164,6 +185,29 @@ if(nrow(mismatched) > 0) {
   stop("Mismatched")
 }
 ```
+
+
+```{r}
+raw_data %>% ggplot(aes(x = time, y = area, group = interaction(patient, date, well))) + 
+  geom_line(alpha = 0.3) +
+  facet_grid(type ~ fsk_label)
+
+raw_data %>% 
+  filter(!(well == 16 & filename == "58-CF 20200813.xlsx")) %>% # There is one weird outlier that just moves everything away
+  ggplot(aes(x = time, y = swell, group = interaction(patient, date, well))) + 
+  geom_line(alpha = 0.3) +
+  facet_grid(type ~ fsk_concentration)
+
+```
+```{r}
+auc_date_avg %>%
+  filter(!(type == "Symkevi" & fsk_label == "5" & filename == "58-CF 20200813.xlsx")) %>% # There is one weird outlier that just moves thee scale away
+  ggplot(aes(x = fsk_label, y = date_avg_auc, group = interaction(patient, date))) +
+  geom_line(alpha = 0.3) +
+  facet_wrap(~type) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+```
+
 
 
 
