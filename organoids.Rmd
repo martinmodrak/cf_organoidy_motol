@@ -198,6 +198,16 @@ raw_data %>%
   geom_line(alpha = 0.3) +
   facet_grid(type ~ fsk_concentration)
 
+type_color_scale <-   scale_color_brewer(type = "qual", guide = guide_legend(override.aes = list(alpha = 1)))
+
+
+raw_data %>% 
+  filter(!(well == 16 & filename == "58-CF 20200813.xlsx")) %>% # There is one weird outlier that just moves everything away
+  ggplot(aes(x = time, y = swell, color = type, group = interaction(patient, date, well))) + 
+  geom_line(alpha = 0.3) +
+  type_color_scale +
+  facet_wrap( ~ fsk_concentration)
+
 ```
 ```{r}
 auc_date_avg %>%
@@ -206,6 +216,13 @@ auc_date_avg %>%
   geom_line(alpha = 0.3) +
   facet_wrap(~type) + 
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+
+auc_date_avg %>%
+  filter(!(type == "Symkevi" & fsk_label == "5" & filename == "58-CF 20200813.xlsx")) %>% # There is one weird outlier that just moves thee scale away
+  ggplot(aes(x = fsk_label, y = date_avg_auc, color = type, group = interaction(patient, date, type))) +
+  geom_line(alpha = 0.5) +
+  type_color_scale
+
 ```
 
 
