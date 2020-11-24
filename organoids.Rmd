@@ -4,6 +4,7 @@ output: html_notebook
 ---
 
 ```{r setup}
+devtools::load_all()
 library(tidyverse)
 library(brms)
 library(readxl)
@@ -79,7 +80,7 @@ well_mapping <- rbind(
   ) %>% 
   mutate(
     type = factor(type, levels = c("FskOnly", "Symkevi", "Kaftrio")),
-    fsk_label = factor(fsk_concentration, levels = fsk_levels, labels = as.character(round(fsk_levels, 3)))
+    fsk_label = factor(fsk_concentration, levels = fsk_levels, labels = as.character(round(fsk_levels, 3)), ordered = TRUE)
     )
 
 all_patients <- list()
@@ -138,6 +139,7 @@ if(nrow(missing_concentrations) > 0) {
 
 ```{r}
 raw_data <- raw_data %>%   
+  filter(!(well == 16 & filename == "58-CF 20200813.xlsx")) %>% # There is one weird outlier that just moves everything away, because it started with very low area
   arrange(patient, date, well, time) %>%
   group_by(patient, date, well) %>%
   mutate(base_area = area[time == 0], 
@@ -193,32 +195,28 @@ raw_data %>% ggplot(aes(x = time, y = area, group = interaction(patient, date, w
   facet_grid(type ~ fsk_label)
 
 raw_data %>% 
-  filter(!(well == 16 & filename == "58-CF 20200813.xlsx")) %>% # There is one weird outlier that just moves everything away
   ggplot(aes(x = time, y = swell, group = interaction(patient, date, well))) + 
   geom_line(alpha = 0.3) +
-  facet_grid(type ~ fsk_concentration)
+  facet_grid(type ~ fsk_label)
 
 type_color_scale <-   scale_color_brewer(type = "qual", guide = guide_legend(override.aes = list(alpha = 1)))
 
 
 raw_data %>% 
-  filter(!(well == 16 & filename == "58-CF 20200813.xlsx")) %>% # There is one weird outlier that just moves everything away
   ggplot(aes(x = time, y = swell, color = type, group = interaction(patient, date, well))) + 
   geom_line(alpha = 0.3) +
   type_color_scale +
-  facet_wrap( ~ fsk_concentration)
+  facet_wrap( ~ fsk_label)
 
 ```
 ```{r}
 auc_date_avg %>%
-  filter(!(type == "Symkevi" & fsk_label == "5" & filename == "58-CF 20200813.xlsx")) %>% # There is one weird outlier that just moves thee scale away
   ggplot(aes(x = fsk_label, y = date_avg_auc, group = interaction(patient, date))) +
   geom_line(alpha = 0.3) +
   facet_wrap(~type) + 
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
 
 auc_date_avg %>%
-  filter(!(type == "Symkevi" & fsk_label == "5" & filename == "58-CF 20200813.xlsx")) %>% # There is one weird outlier that just moves thee scale away
   ggplot(aes(x = fsk_label, y = date_avg_auc, color = type, group = interaction(patient, date, type))) +
   geom_line(alpha = 0.5) +
   type_color_scale
@@ -226,5 +224,52 @@ auc_date_avg %>%
 ```
 
 
+```{r}
+cache_dir <- here::here("local_temp_data")
+if(!dir.exists(cache_dir)) {
+  dir.create(cache_dir)
+}
+names(auc)
+levels(auc$type)
+```
+## Bayesian mixed-effects models
 
+```{r}
+fit_auc1 <- brm_with_cache(auc ~ (1 | patient) + (1 | filename) + type + mo(fsk_label), data = auc, family = "gaussian", cache_file = paste0(cache_dir, "/fit_auc1.rds"))
+```
+```{r}
+pp_check(fit_auc1, "stat_grouped", stat = "sd", group = "fsk_label")
+pp_check(fit_auc1, "stat_grouped", stat = "sd", group = "type")
+```
+
+```{r}
+fit_auc2 <- brm_with_cache(bf(auc ~ (1 | patient) + (1 | filename) + type + mo(fsk_label),sigma ~ type + fsk_label), data = auc, family = "gaussian", cache_file = paste0(cache_dir, "/fit_auc2.rds"))
+fit_auc2
+```
+
+```{r}
+cat(fit_auc2$fit@stanmodel@model_code)
+```
+
+
+```{r}
+pp_check(fit_auc2, "stat_grouped", stat = "sd", group = "fsk_label")
+pp_check(fit_auc2, "stat_grouped", stat = "sd", group = "type")
+```
+
+```{r}
+fit_area1 <- brm_with_cache(area ~ (1 | patient) + (1 | filename * well) + type + mo(fsk_label)*mo(time), data = raw_data, family = "lognormal", cache_file = paste0(cache_dir, "/fit_area1.rds"))
+```
+```{r}
+pp_check(fit_area1, "stat_grouped", stat = "sd", group = "fsk_label")
+pp_check(fit_area1, "stat_grouped", stat = "sd", group = "type")
+```
+
+## Frequentist models
+
+```{r}
+fit_lm_auc <- lm(auc ~ fsk_label * type, data = auc)
+fit_lm_auc
+TukeyHSD(aov(fit_lm_auc))
+```
 
