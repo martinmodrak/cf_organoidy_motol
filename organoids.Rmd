@@ -10,8 +10,13 @@ library(brms)
 library(readxl)
 library(lubridate)
 theme_set(cowplot::theme_cowplot())
-options(mc.cores = parallel::detectCores())
+options(mc.cores = parallel::detectCores(), brms.backend = "cmdstanr")
 rstan::rstan_options(auto_write = TRUE)
+cache_dir <- here::here("local_temp_data")
+if(!dir.exists(cache_dir)) {
+  dir.create(cache_dir)
+}
+
 ```
 
 ```{r}
@@ -95,7 +100,8 @@ map_1_3_files <- c("04-CF 20200820.xlsx", "21-CF 20200813.xlsx", "41-CF 20200820
 raw_data <- do.call(rbind, all_patients) %>% 
   mutate(mapping = if_else(filename %in% map_1_3_files, "1_3", "2_2")) %>%
   inner_join(well_mapping, by = c("well", "mapping")) %>%
-  filter(!is.na(area), area != 0)
+  filter(!is.na(area), area != 0) %>%
+  ungroup()
 
 ```
 
@@ -143,13 +149,19 @@ raw_data <- raw_data %>%
   arrange(patient, date, well, time) %>%
   group_by(patient, date, well) %>%
   mutate(base_area = area[time == 0], 
+         area_relative = area/base_area,
          swell = 100 * area / base_area - 100) %>%
+  ungroup()
+
+raw_data <- raw_data %>%
+  group_by(patient) %>%
+  filter(length(unique(filename)) > 1) %>%
   ungroup()
 
 auc <- raw_data %>%
   group_by(patient, date, well, filename, mapping) %>%
   summarise(auc = sum((time[2:7] - time[1:6]) * (swell[1:6] + swell[2:7]) / 2), .groups = "drop") %>%
-  inner_join(well_mapping, by = c("well", "mapping"))
+  inner_join(well_mapping, by = c("well", "mapping")) 
 
 
 # auc_pat_avg %>% ggplot(aes(x = factor(fsk_concentration), y = pat_avg_auc, color = type, group = type)) + geom_line() + facet_wrap(~patient, ncol = 1) 
@@ -168,7 +180,7 @@ auc_pat_avg <- auc_date_avg %>%
   group_by(patient, fsk_concentration, type) %>% 
   summarise(pat_avg_auc = mean(date_avg_auc), .groups = "drop")
 
-summary_manual_raw <- read_excel("DATA/results_summary 20201113.xlsx", range = "A1:K19") 
+summary_manual_raw <- read_excel("DATA/results_summary 20201130_new.xlsx", range = "A1:K18") 
 summary_manual <- summary_manual_raw %>% 
   pivot_longer(cols = c(starts_with("Symkevi"), starts_with("Kaftrio")), names_to = c("type", "fsk_concentration"), values_to = "pat_avg_auc", names_sep = " ") %>%
   mutate(fsk_concentration = gsub(",", ".", fsk_concentration, fixed = TRUE))
@@ -178,6 +190,7 @@ matched <- auc_pat_avg %>% mutate(fsk_concentration = as.character(round(fsk_con
   inner_join(summary_manual, by = c("patient" = "ID", "type", "fsk_concentration"))
 
 if(nrow(matched) != nrow(summary_manual)) {
+  print(summary_manual %>% anti_join(matched, by = c("ID" = "patient", "fsk_concentration", "type")) )
   stop("Not all matched")
 }
 
@@ -188,6 +201,7 @@ if(nrow(mismatched) > 0) {
 }
 ```
 
+# Plots, descriptive statistics
 
 ```{r}
 raw_data %>% ggplot(aes(x = time, y = area, group = interaction(patient, date, well))) + 
@@ -201,14 +215,29 @@ raw_data %>%
 
 type_color_scale <-   scale_color_brewer(type = "qual", guide = guide_legend(override.aes = list(alpha = 1)))
 
+plot_swell <- function(raw_data, alpha = 0.3) {
+  raw_data %>% 
+    ggplot(aes(x = time, y = swell, color = type, group = interaction(patient, date, well))) + 
+    geom_line(alpha = alpha) +
+    type_color_scale +
+    facet_wrap( ~ fsk_label)
+}
 
-raw_data %>% 
-  ggplot(aes(x = time, y = swell, color = type, group = interaction(patient, date, well))) + 
-  geom_line(alpha = 0.3) +
-  type_color_scale +
-  facet_wrap( ~ fsk_label)
+plot_swell(raw_data)
 
+
+plot_area <- function(raw_data, alpha = 0.3) {
+  raw_data %>% 
+    ggplot(aes(x = time, y = area, color = type, group = interaction(patient, date, well))) + 
+    geom_line(alpha = alpha) +
+    type_color_scale +
+    facet_wrap( ~ fsk_label)
+}
+
+plot_area(raw_data)
 ```
+
+
 ```{r}
 auc_date_avg %>%
   ggplot(aes(x = fsk_label, y = date_avg_auc, group = interaction(patient, date))) +
@@ -223,16 +252,260 @@ auc_date_avg %>%
 
 ```
 
+```{r}
+# Toying with transform from area to volume, but does not seem to change the shape of the data in any important way
+
+# raw_data_subsamp <- raw_data %>% mutate(grp = interaction(patient, date, well)) %>%
+#   filter(grp %in% sample(grp, round(length(unique(grp)) / 8)))
+# 
+# raw_data_subsamp %>% 
+#   ggplot(aes(x = time, y = area^(3/2) / 40, color = type, group = interaction(patient, date, well))) + 
+#   geom_line(alpha = 0.4) +
+#   type_color_scale +
+#   facet_wrap( ~ fsk_label, scales = "free_y")
+# 
+# raw_data_subsamp %>% 
+#   ggplot(aes(x = time, y = area, color = type, group = interaction(patient, date, well))) + 
+#   geom_line(alpha = 0.4) +
+#   type_color_scale +
+#   facet_wrap( ~ fsk_label, scales = "free_y")
+
+```
+
+## Is the control condition flat?
 
 ```{r}
-cache_dir <- here::here("local_temp_data")
-if(!dir.exists(cache_dir)) {
-  dir.create(cache_dir)
-}
-names(auc)
-levels(auc$type)
+raw_data %>% 
+  filter(type == "FskOnly") %>%
+  ggplot(aes(x = time, y = area, group = interaction(patient, date, well))) + 
+  geom_line(alpha = 0.3) +
+  facet_wrap( ~ fsk_label)
+
+raw_data %>% 
+  filter(type == "FskOnly") %>%
+  ggplot(aes(x = time, y = swell, group = interaction(patient, date, well))) + 
+  geom_line(alpha = 0.3) +
+  facet_wrap( ~ fsk_label)
+
+
+auc %>% 
+  filter(type == "FskOnly") %>%
+  ggplot(aes(x = fsk_label, y = auc)) +
+  geom_hline(yintercept = 0, color = "blue") + 
+  geom_jitter(alpha = 0.3, width = 0.3, height = 0)
+
+auc_date_avg %>%
+  filter(type == "FskOnly") %>%
+  ggplot(aes(x = fsk_label, y = date_avg_auc, group = interaction(patient, date))) +
+  geom_hline(yintercept = 0, color = "blue") +
+  geom_line(alpha = 0.3) 
 ```
+
+## Between/within variability
+
+```{r}
+total_variability <- raw_data %>%
+  filter(time > 0) %>%
+  group_by(type, time, fsk_label) %>%
+  summarise(sd_log_area_relative = sd(log(area_relative)), .groups = "drop")
+
+within_patient_variability <- raw_data %>%
+  filter(time > 0) %>%
+  group_by(type, time, fsk_label, patient) %>%
+  summarise(sd_log_area_relative = sd(log(area_relative)), .groups = "drop")
+
+for(t in unique(total_variability$type)) {
+  pl <- within_patient_variability %>% 
+    filter(type == t) %>% 
+    ggplot(aes(x = sd_log_area_relative)) + 
+      geom_histogram(bins = 10) +
+      geom_vline(data = total_variability %>% filter(type == t), aes(xintercept = sd_log_area_relative), color = "blue") + 
+      facet_grid(fsk_label ~ time) + ggtitle(t)
+      
+  print(pl)
+}
+```
+
+```{r}
+within_patient_variability %>% 
+  inner_join(total_variability, by = c("time", "fsk_label", "type"), suffix = c(".patient", ".total")) %>%
+  group_by(type, time, fsk_label) %>%
+  summarise(p_patient_less = mean(sd_log_area_relative.patient < sd_log_area_relative.total),
+            variance_prop = sd_log_area_relative.patient ^2 / sd_log_area_relative.total ^ 2,
+            .groups = "drop") %>%
+  ggplot(aes(x = variance_prop)) + geom_histogram(binwidth = 0.05) + facet_wrap(~type) + scale_x_log10()
+```
+
+
+```{r}
+total_variability_auc <- auc %>%
+  group_by(type, fsk_label) %>%
+  summarise(sd_auc = sd(auc), .groups = "drop")
+
+within_patient_variability_auc <- auc %>%
+  group_by(type, fsk_label, patient) %>%
+  summarise(sd_auc = sd(auc), .groups = "drop")
+
+within_patient_variability_auc %>% 
+  ggplot(aes(x = sd_auc)) + 
+    geom_histogram(bins = 10) +
+    geom_vline(data = total_variability_auc, aes(xintercept = sd_auc), color = "blue") + 
+    facet_grid(type ~ fsk_label)
+      
+```
+
+## Reversals
+
+```{r}
+reversed_patients <- auc_date_avg %>% 
+  filter(type != "FskOnly") %>%
+  pivot_wider(names_from = "type",values_from = "date_avg_auc") %>%
+  filter(Symkevi > Kaftrio) %>%
+  pull(patient) %>% unique()
+
+for(r_p in reversed_patients) {
+  print(plot_swell(raw_data %>% filter(patient == r_p), alpha = 1) + ggtitle(r_p))
+}
+```
+
+```{r}
+probabilities_symkevi_better_observed <- 
+  raw_data %>% filter(type == "Symkevi", time > 0 ) %>%
+  inner_join(raw_data %>% filter(type == "Kaftrio" ), by = c("fsk_label", "time", "patient"), suffix = c(".Symkevi",".Kaftrio")) %>%
+  group_by(fsk_label, time) %>%
+  summarise(observed_total = n(),
+            observed_reversed = sum(area_relative.Symkevi > area_relative.Kaftrio),
+            probability_reversal_observed = observed_reversed / observed_total,
+            observed_ci_lower = qbeta(0.025, observed_reversed + 1, observed_total - observed_reversed + 1), 
+            observed_ci_upper = qbeta(0.975, observed_reversed + 1, observed_total - observed_reversed + 1),
+            .groups = "drop") 
+
+probabilities_symkevi_better_observed %>%
+  filter(time > 10) %>%
+  ggplot(aes(x = as.character(time), y = probability_reversal_observed, ymax = observed_ci_upper, ymin = observed_ci_lower, group = fsk_label)) + 
+    geom_ribbon(color = FALSE, alpha = 0.3) +
+    geom_line() + 
+    facet_wrap(~fsk_label)
+
+```
+```{r}
+probabilities_symkevi_better_observed_auc <- 
+  auc %>% filter(type == "Symkevi") %>%
+  inner_join(auc %>% filter(type == "Kaftrio" ), by = c("fsk_label", "patient"), suffix = c(".Symkevi",".Kaftrio")) %>%
+  group_by(fsk_label) %>%
+  summarise(observed_total = n(),
+            observed_reversed = sum(auc.Symkevi > auc.Kaftrio),
+            probability_reversal_observed = observed_reversed / observed_total,
+            observed_ci_lower = qbeta(0.025, observed_reversed + 1, observed_total - observed_reversed + 1), 
+            observed_ci_upper = qbeta(0.975, observed_reversed + 1, observed_total - observed_reversed + 1),
+            .groups = "drop") 
+
+probabilities_symkevi_better_observed_auc %>%
+  ggplot(aes(x = fsk_label, y = probability_reversal_observed, ymax = observed_ci_upper, ymin = observed_ci_lower, group = 1)) + 
+    geom_ribbon(color = FALSE, alpha = 0.3) +
+    geom_line() 
+
+```
+# Modelling
+
 ## Bayesian mixed-effects models
+
+### Area, controling for base_area
+
+```{r}
+raw_data_area_fit <- raw_data %>% 
+  filter(fsk_label %in% c("0.051", "0.128", "0.8", "2", "5"), 
+         type != "FskOnly", time > 0) %>%
+  mutate(is_kaftrio = factor(type == "Kaftrio"),
+         log_base_area = log(base_area),
+         log_area = log(area),
+         filename_well = paste0(filename, "__", well),
+         time_f = factor(time))
+
+f_area_vs_base_1 <-log_area ~ log_base_area + fsk_label * type*time_f + 
+  (1 + type || patient) + (1 || filename_well) 
+fit_area_vs_base_1 <- brm_with_cache(f_area_vs_base_1, data = raw_data_area_fit, family = gaussian(), iter = 2000, cache_file = paste0(cache_dir, "/fit_area_vs_base_1.rds"))
+
+#brms::parnames(f_area_vs_base_one_1)
+
+fit_area_vs_base_1
+```
+```{r}
+probability_symkevi_better_area_from_fit <- function(fit, time_f, fsk_label) {
+  new_data_comparison <- data.frame(
+    type = c("Symkevi", "Kaftrio"), filename_well = c("NewA", "NewB"), 
+    time_f = time_f, fsk_label = fsk_label,
+    patient = "new_patient",
+    log_base_area = 0
+    )
+  
+  pred_comparison <- posterior_predict(fit, summary = FALSE, newdata = new_data_comparison, allow_new_levels = TRUE)
+  mean(pred_comparison[,1] >= pred_comparison[,2])
+}
+
+
+# probability_symkevi_better_area_from_fit(fit_area_vs_base_1, "30", "0.8")
+
+
+probabilities_symkevi_better_fit <- crossing(time_f = levels(raw_data_area_fit$time_f), fsk_label = droplevels(unique(raw_data_area_fit$fsk_label))) %>%
+  rowwise() %>%
+  mutate(probability_reversal_fit = probability_symkevi_better_area_from_fit(fit_area_vs_base_1, time_f, fsk_label))
+  
+
+
+```
+```{r}
+
+  
+reversal_probs <- probabilities_symkevi_better_fit %>% 
+  mutate(fsk_label = as.character(fsk_label), time = as.character(time_f)) %>%
+  inner_join(probabilities_symkevi_better_observed %>% mutate(fsk_label = as.character(fsk_label), time = as.character(time)) )
+
+reversal_probs %>% pivot_longer(starts_with("probability"), names_to = "type", values_to = "prob_reversal", names_prefix = "probability_reversal_") %>%
+  ggplot(aes(x = time, y = prob_reversal, color = type, group = type)) + 
+    geom_ribbon(aes(x = as.character(time), ymax = observed_ci_upper, ymin = observed_ci_lower, group = fsk_label), inherit.aes = FALSE, data = reversal_probs, color = FALSE, alpha = 0.3) +
+    geom_line() + facet_wrap(~fsk_label)
+
+```
+
+
+```{r}
+# Remnants of code from failed attempts at smoothing
+
+# make_stancode(f_area_vs_base_1, data = raw_data_to_fit, family = gaussian(link = "log"))
+# 
+# xx <- make_standata(area ~ log_base_area + s(time, k = 3) + s(time, k = 3, by = is_kaftrio), data = raw_data_to_fit, family = gaussian(link = "log"))
+```
+
+
+```{r}
+# smooths <- conditional_smooths(fit_area_vs_base_08_1)
+# plot(smooths)
+
+# pred <- posterior_predict(fit_area_vs_base_08_1, summary = FALSE)
+# bayesplot::ppc_dens_overlay(raw_data_to_fit$area, pred[sample(1:nrow(pred), 50),])
+# bayesplot::ppc_stat_grouped(raw_data_to_fit$area, pred, group = interaction(raw_data_to_fit$type, raw_data_to_fit$time))
+```
+
+```{r}
+# raw_data_to_fit <- raw_data %>% 
+#   filter(type != "FskOnly", time > 0) %>%
+#   mutate(is_kaftrio = factor(type == "Kaftrio"),
+#          log_base_area = log(base_area),
+#          time_f = factor(time))
+# 
+# f_area_vs_base_all_1 <- area ~ log_base_area + is_kaftrio*time_f*fsk_label 
+# fit_area_vs_base_all_1 <- brm_with_cache(f_area_vs_base_all_1, data = raw_data_to_fit, family = gaussian(link = "log"), iter = 2000, threads = 2, cache_file = paste0(cache_dir, "/fit_area_vs_base_all_1.rds"))
+# 
+# fit_area_vs_base_all_1
+
+```
+
+
+
+
+
+### AUC- older bad takes
 
 ```{r}
 fit_auc1 <- brm_with_cache(auc ~ (1 | patient) + (1 | filename) + type + mo(fsk_label), data = auc, family = "gaussian", cache_file = paste0(cache_dir, "/fit_auc1.rds"))
@@ -258,18 +531,114 @@ pp_check(fit_auc2, "stat_grouped", stat = "sd", group = "type")
 ```
 
 ```{r}
-fit_area1 <- brm_with_cache(area ~ (1 | patient) + (1 | filename * well) + type + mo(fsk_label)*mo(time), data = raw_data, family = "lognormal", cache_file = paste0(cache_dir, "/fit_area1.rds"))
+# fit_area1 <- brm_with_cache(area ~ (1 | patient) + (1 | filename * well) + type + mo(fsk_label)*mo(time), data = raw_data, family = "lognormal", cache_file = paste0(cache_dir, "/fit_area1.rds"))
 ```
 ```{r}
-pp_check(fit_area1, "stat_grouped", stat = "sd", group = "fsk_label")
-pp_check(fit_area1, "stat_grouped", stat = "sd", group = "type")
+# pp_check(fit_area1, "stat_grouped", stat = "sd", group = "fsk_label")
+# pp_check(fit_area1, "stat_grouped", stat = "sd", group = "type")
+```
+
+### INLA
+
+```{r}
+library(INLA)
+inla.setOption(num.threads = parallel::detectCores() - 2)
+raw_data_inla <- raw_data %>% 
+  filter(type != "FskOnly", time > 0) %>%
+  mutate(type = droplevels(type),
+         log_area = log(area),
+         log_base_area = log(base_area),
+         patient_id = as.integer(factor(patient)),
+         filename_well_id = as.integer(interaction(filename, well)),
+         time_f = factor(time),
+         # fsk_label_id = as.integer(fsk_label),
+         # time_id = as.integer(time/10),
+#         time_id_kaftrio = time_id_symkevi,
+         is_kaftrio = type == "Kaftrio"
+         )
+
+patient_id <- raw_data_inla$patient_id
+patient_id_kaftrio <- raw_data_inla$patient_id
+lincomb_diff_60 <- inla.make.lincomb(typeKaftrio = 1, )
+inla_m1 <- inla(log_area ~ log_base_area + type*time_f*fsk_label +
+                  f(patient_id, model = "iid") +
+                  f(patient_id_kaftrio, raw_data_inla$is_kaftrio, model = "iid"),
+                  data = raw_data_inla
+                ,  
+                family = "gaussian",
+                control.predictor = control.predictor(compute = TRUE)
+                  )
+
+summary(inla_m1)
+
+
+```
+
+```{r}
+filename_well_id <- raw_data_inla$filename_well_id
+inla_m2 <- inla(log_area ~ log_base_area + type*time_f*fsk_label +
+                  f(patient_id, model = "iid") +
+                  f(patient_id_kaftrio, raw_data_inla$is_kaftrio, model = "iid") + 
+                  f(filename_well_id, model = "iid"),
+                  data = raw_data_inla
+                ,  
+                family = "gaussian",
+                control.predictor = control.predictor(compute = TRUE)
+                  )
+
+summary(inla_m2)
 ```
 
 ## Frequentist models
 
+We test two linear model variants: the _AUC_ model focuses on the AUC metric, which is modelled as normally distributed with the full interaction of the forskolin level and drug as predictors. In the _area_ model we model the logarithm of area of the organoids explicitly, assuming normal distribution and treating the log of the area at time 0 and full interaction of time, forskolin level and drug as predictors (i.e. we assume that the area at time 0 is multiplied by a number that is specific for each drug and time step but does not differ between patients and replicates).
+
+We use the `TukeyHSD` method to correct for multiple comparisons.
+
 ```{r}
-fit_lm_auc <- lm(auc ~ fsk_label * type, data = auc)
+fit_lm_auc <- lm(auc ~ fsk_label * type, data = auc %>% filter(type != "FskOnly"))
 fit_lm_auc
-TukeyHSD(aov(fit_lm_auc))
+summary(fit_lm_auc)
+hsd_res_auc <- TukeyHSD(aov(fit_lm_auc))
+interesting_res_auc <- hsd_res_auc$`fsk_label:type`[paste0(levels(auc$fsk_label), ":Kaftrio-",levels(auc$fsk_label),":Symkevi"),]
+interesting_res_auc
+round(min(interesting_res_auc[,"lwr"]))
 ```
 
+For the AUC model we see noticeable difference between Symkevi and Kaftrio for all forskolin concentration (all p < 0.001, all 95% CI exclude absolute difference in AUC < `r round(min(interesting_res_auc[,"lwr"]))`.
+
+
+```{r}
+raw_data_to_fit <- raw_data %>% 
+  filter(type != "FskOnly", time > 0) %>%
+  mutate(is_kaftrio = factor(type == "Kaftrio"),
+         log_area = log(area),
+         log_base_area = log(base_area),
+         time_f = factor(time))
+
+
+fit_lm_area_base <- lm(log_area ~ log_base_area + type*time_f*fsk_label, data = raw_data_to_fit)
+summary(fit_lm_area_base)
+
+hsd_res_area <- TukeyHSD(aov(fit_lm_area_base), which = c("type:time_f:fsk_label"))
+interesting_cases_area <- crossing(fsk = levels(auc$fsk_label), time = levels(raw_data_to_fit$time_f)) %>%
+  mutate(name = paste0("Kaftrio:", time,":", fsk, "-Symkevi:", time, ":", fsk)) %>% 
+  pull(name)
+interesting_res_area <-  hsd_res_area$`type:time_f:fsk_label`[interesting_cases_area,]
+interesting_res_area[interesting_res_area[,"p adj"] < 1e-3,]
+interesting_res_area[interesting_res_area[,"p adj"] >= 1e-3,]
+```
+Let us note that the coefficient for the are at time 0 (`log_base_area`) is fitted as almost exactly 1, which is a bit of support for this model being a good fit for the data.
+
+```{r}
+min_lwr_60 <- min(interesting_res_area[grepl(":60:", rownames(interesting_res_area)),"lwr"])
+#max_diff_40 <- max(interesting_res_area[grepl("\\:[4-6]0\\:", rownames(interesting_res_area)),"upr"])
+
+round((exp(min_lwr_60) - 1) * 100)
+#round((exp(max_diff_40) - 1) * 100)
+
+```
+
+
+
+For the area model we see statistically significant relative increase in area for Kaftrio over Symkevi when forskolin concentration is larger than 0.128 or when time > 10 minutes (all p < 0.001) for times > 30 minutes the model rules out less than `r round((exp(min_lwr_60) - 1) * 100)`% increase in area with Kaftrio over Symkevi for all forskolin concentrations.  
