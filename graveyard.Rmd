@@ -1,0 +1,117 @@
+---
+title: "Graveyard of potentially still useful bits of scripts"
+output: html_notebook
+---
+
+```{r}
+# Toying with transform from area to volume, but does not seem to change the shape of the data in any important way
+
+# raw_data_subsamp <- raw_data %>% mutate(grp = interaction(patient, date, well)) %>%
+#   filter(grp %in% sample(grp, round(length(unique(grp)) / 8)))
+# 
+# raw_data_subsamp %>% 
+#   ggplot(aes(x = time, y = area^(3/2) / 40, color = type, group = interaction(patient, date, well))) + 
+#   geom_line(alpha = 0.4) +
+#   type_color_scale +
+#   facet_wrap( ~ fsk_label, scales = "free_y")
+# 
+# raw_data_subsamp %>% 
+#   ggplot(aes(x = time, y = area, color = type, group = interaction(patient, date, well))) + 
+#   geom_line(alpha = 0.4) +
+#   type_color_scale +
+#   facet_wrap( ~ fsk_label, scales = "free_y")
+
+```
+
+```{r}
+ranef_area_vs_base <- ranef(fit_area_vs_base_1, groups = "patient", summary = FALSE)
+reversed_patients_effects_list <- list()
+for(fsk_label in primary_concentration_labels){
+  hypothesis_left_hand <- "typeKaftrio + typeKaftrio:time_f60"
+  if(fsk_label != primary_concentration_labels[1]) {
+    hypothesis_left_hand <- paste0(hypothesis_left_hand, " + fsk_label", fsk_label, ":typeKaftrio + fsk_label", fsk_label, ":typeKaftrio:time_f60")
+  }
+    
+  kaftrio_symkevi_diff_t_60 <- 
+    brms::hypothesis(
+      fit_area_vs_base_1, 
+      paste0(hypothesis_left_hand, " > 0") )
+  
+  for(pt in reversed_patients) {
+    samples_pt <- ranef_area_vs_base$patient[, pt, "typeKaftrio"]
+    samples_diff <- kaftrio_symkevi_diff_t_60$samples$H1 + samples_pt
+    
+    m <- mean(samples_diff)
+    qs <- quantile(samples_diff, probs = c(0.025,0.975)) 
+    reversed_patients_effects_list[[length(reversed_patients_effects_list) + 1]] <- 
+      data.frame(patient = pt, fsk_label = fsk_label, mean = m, low = qs[1], high = qs[2])
+  }
+}
+  
+reversed_patients_effects <- do.call(rbind, reversed_patients_effects_list)
+
+reversed_patients_effects %>%
+  ggplot(aes( x = fsk_label, y = mean, ymin = low, ymax = high)) +
+     geom_linerange() +
+     geom_point() +
+  facet_wrap(~patient)
+
+```
+
+
+#### INLA
+
+```{r}
+library(INLA)
+inla.setOption(num.threads = parallel::detectCores() - 2)
+raw_data_inla <- raw_data %>% 
+  filter(type != "FskOnly", time > 0) %>%
+  mutate(type = droplevels(type),
+         log_area = log(area),
+         log_base_area = log(base_area),
+         patient_id = as.integer(factor(patient)),
+         filename_well_id = as.integer(interaction(filename, well)),
+         time_f = factor(time),
+         # fsk_label_id = as.integer(fsk_label),
+         # time_id = as.integer(time/10),
+#         time_id_kaftrio = time_id_symkevi,
+         is_kaftrio = type == "Kaftrio"
+         )
+
+patient_id <- raw_data_inla$patient_id
+patient_id_kaftrio <- raw_data_inla$patient_id
+lincomb_diff_60 <- inla.make.lincomb(typeKaftrio = 1, )
+inla_m1 <- inla(log_area ~ log_base_area + type*time_f*fsk_label +
+                  f(patient_id, model = "iid") +
+                  f(patient_id_kaftrio, raw_data_inla$is_kaftrio, model = "iid"),
+                  data = raw_data_inla
+                ,  
+                family = "gaussian",
+                control.predictor = control.predictor(compute = TRUE)
+                  )
+
+summary(inla_m1)
+
+
+```
+
+```{r}
+filename_well_id <- raw_data_inla$filename_well_id
+inla_m2 <- inla(log_area ~ log_base_area + type*time_f*fsk_label +
+                  f(patient_id, model = "iid") +
+                  f(patient_id_kaftrio, raw_data_inla$is_kaftrio, model = "iid") + 
+                  f(filename_well_id, model = "iid"),
+                  data = raw_data_inla
+                ,  
+                family = "gaussian",
+                control.predictor = control.predictor(compute = TRUE)
+                  )
+
+summary(inla_m2)
+```
+
+ 
+
+
+
+

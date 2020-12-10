@@ -1,0 +1,217 @@
+---
+title: "Between-patient variability"
+output: html_notebook
+---
+
+```{r setup}
+library(tidyverse)
+devtools::load_all()
+library(brms)
+library(readxl)
+library(lubridate)
+theme_set(cowplot::theme_cowplot())
+options(mc.cores = parallel::detectCores(), brms.backend = "cmdstanr")
+rstan::rstan_options(auto_write = TRUE)
+cache_dir <- here::here("local_temp_data")
+if(!dir.exists(cache_dir)) {
+  dir.create(cache_dir)
+}
+
+```
+
+```{r}
+raw_data <- read_raw_data() %>% compute_derived_quantitites() %>% remove_few_replicates
+
+auc <- raw_data_to_auc(raw_data)
+```
+
+
+## Between/within variability
+
+```{r}
+total_variability <- raw_data %>%
+  filter(time > 0) %>%
+  group_by(type, time, fsk_label) %>%
+  summarise(sd_log_area_relative = sd(log(area_relative)), .groups = "drop")
+
+within_patient_variability <- raw_data %>%
+  filter(time > 0) %>%
+  group_by(type, time, fsk_label, patient) %>%
+  summarise(sd_log_area_relative = sd(log(area_relative)), .groups = "drop")
+
+for(t in unique(total_variability$type)) {
+  pl <- within_patient_variability %>% 
+    filter(type == t) %>% 
+    ggplot(aes(x = sd_log_area_relative)) + 
+      geom_histogram(bins = 10) +
+      geom_vline(data = total_variability %>% filter(type == t), aes(xintercept = sd_log_area_relative), color = "blue") + 
+      facet_grid(fsk_label ~ time) + ggtitle(t)
+      
+  print(pl)
+}
+```
+
+```{r}
+within_patient_variability %>% 
+  inner_join(total_variability, by = c("time", "fsk_label", "type"), suffix = c(".patient", ".total")) %>%
+  group_by(type, time, fsk_label) %>%
+  summarise(p_patient_less = mean(sd_log_area_relative.patient < sd_log_area_relative.total),
+            variance_prop = sd_log_area_relative.patient ^2 / sd_log_area_relative.total ^ 2,
+            .groups = "drop") %>%
+  ggplot(aes(x = variance_prop)) + geom_histogram(binwidth = 0.05) + facet_wrap(~type) + scale_x_log10()
+```
+
+
+```{r}
+total_variability_auc <- auc %>%
+  group_by(type, fsk_label) %>%
+  summarise(sd_auc = sd(auc), .groups = "drop")
+
+within_patient_variability_auc <- auc %>%
+  group_by(type, fsk_label, patient) %>%
+  summarise(sd_auc = sd(auc), .groups = "drop")
+
+within_patient_variability_auc %>% 
+  ggplot(aes(x = sd_auc)) + 
+    geom_histogram(bins = 10) +
+    geom_vline(data = total_variability_auc, aes(xintercept = sd_auc), color = "blue") + 
+    facet_grid(type ~ fsk_label)
+      
+```
+
+
+
+## Reversals
+
+```{r}
+reversed_patients <- auc_date_avg %>% 
+  filter(type != "FskOnly") %>%
+  pivot_wider(names_from = "type",values_from = "date_avg_auc") %>%
+  filter(Symkevi > Kaftrio) %>%
+  pull(patient) %>% unique()
+
+for(r_p in reversed_patients) {
+  print(plot_swell(raw_data %>% filter(patient == r_p), alpha = 1) + ggtitle(r_p))
+}
+```
+
+```{r}
+probabilities_symkevi_better_observed <- 
+  raw_data %>% filter(type == "Symkevi", time > 0 ) %>%
+  inner_join(raw_data %>% filter(type == "Kaftrio" ), by = c("fsk_label", "time", "patient"), suffix = c(".Symkevi",".Kaftrio")) %>%
+  group_by(fsk_label, time) %>%
+  summarise(observed_total = n(),
+            observed_reversed = sum(area_relative.Symkevi > area_relative.Kaftrio),
+            probability_reversal_observed = observed_reversed / observed_total,
+            observed_ci_lower = qbeta(0.025, observed_reversed + 1, observed_total - observed_reversed + 1), 
+            observed_ci_upper = qbeta(0.975, observed_reversed + 1, observed_total - observed_reversed + 1),
+            .groups = "drop") 
+
+plot_prob_reversals_observed <-  probabilities_symkevi_better_observed %>%
+  filter(time > 10) %>%
+  ggplot(aes(x = as.character(time), y = probability_reversal_observed, ymax = observed_ci_upper, ymin = observed_ci_lower, group = fsk_label)) + 
+    geom_ribbon(color = FALSE, alpha = 0.3) +
+    geom_line() + 
+    facet_wrap(~fsk_label)
+
+plot_prob_reversals_observed
+#ggsave(here::here("local_temp_data", "prob_reversals.png"), plot_prob_reversals_observed)
+
+```
+```{r}
+probabilities_symkevi_better_observed_auc <- 
+  auc %>% filter(type == "Symkevi") %>%
+  inner_join(auc %>% filter(type == "Kaftrio" ), by = c("fsk_label", "patient"), suffix = c(".Symkevi",".Kaftrio")) %>%
+  group_by(fsk_label) %>%
+  summarise(observed_total = n(),
+            observed_reversed = sum(auc.Symkevi > auc.Kaftrio),
+            probability_reversal_observed = observed_reversed / observed_total,
+            observed_ci_lower = qbeta(0.025, observed_reversed + 1, observed_total - observed_reversed + 1), 
+            observed_ci_upper = qbeta(0.975, observed_reversed + 1, observed_total - observed_reversed + 1),
+            .groups = "drop") 
+
+probabilities_symkevi_better_observed_auc %>%
+  ggplot(aes(x = fsk_label, y = probability_reversal_observed, ymax = observed_ci_upper, ymin = observed_ci_lower, group = 1)) + 
+    geom_ribbon(color = FALSE, alpha = 0.3) +
+    geom_line() 
+
+```
+
+## Reversals from models
+
+```{r}
+probability_symkevi_better_area_from_fit <- function(fit, time_f, fsk_label) {
+  new_data_comparison <- data.frame(
+    type = c("Symkevi", "Kaftrio"), filename_well = c("NewA", "NewB"), 
+    time_f = time_f, fsk_label = fsk_label,
+    patient = "new_patient",
+    log_base_area = 0
+    )
+  
+  pred_comparison <- posterior_predict(fit, summary = FALSE, newdata = new_data_comparison, allow_new_levels = TRUE)
+  mean(pred_comparison[,1] >= pred_comparison[,2])
+}
+
+
+# probability_symkevi_better_area_from_fit(fit_area_vs_base_1, "30", "0.8")
+
+
+probabilities_symkevi_better_fit <- crossing(time_f = levels(raw_data_area_fit$time_f), fsk_label = droplevels(unique(raw_data_area_fit$fsk_label))) %>%
+  rowwise() %>%
+  mutate(probability_reversal_fit = probability_symkevi_better_area_from_fit(fit_area_vs_base_1, time_f, fsk_label))
+  
+
+
+```
+
+
+```{r}
+
+  
+reversal_probs <- probabilities_symkevi_better_fit %>% 
+  mutate(fsk_label = as.character(fsk_label), time = as.character(time_f)) %>%
+  inner_join(probabilities_symkevi_better_observed %>% mutate(fsk_label = as.character(fsk_label), time = as.character(time)) )
+
+reversal_probs %>% pivot_longer(starts_with("probability"), names_to = "type", values_to = "prob_reversal", names_prefix = "probability_reversal_") %>%
+  ggplot(aes(x = time, y = prob_reversal, color = type, group = type)) + 
+    geom_ribbon(aes(x = as.character(time), ymax = observed_ci_upper, ymin = observed_ci_lower, group = fsk_label), inherit.aes = FALSE, data = reversal_probs, color = FALSE, alpha = 0.3) +
+    geom_line() + facet_wrap(~fsk_label)
+
+```
+
+
+#### V2
+
+```{r}
+f_area_vs_base_2 <- bf(log_area ~ log_base_area + fsk_label * type*time_f + 
+  (1 + type || patient) + (1 || filename_well), sigma ~ time_f )
+fit_area_vs_base_2 <- brm_with_cache(f_area_vs_base_2, data = raw_data_area_fit, family = gaussian(), cache_file = paste0(cache_dir, "/fit_area_vs_base_2.rds"))
+
+#brms::parnames(f_area_vs_base_one_1)
+
+fit_area_vs_base_2
+```
+```{r}
+probabilities_symkevi_better_fit_2 <- crossing(time_f = levels(raw_data_area_fit$time_f), fsk_label = droplevels(unique(raw_data_area_fit$fsk_label))) %>%
+  rowwise() %>%
+  mutate(probability_reversal_fit = probability_symkevi_better_area_from_fit(fit_area_vs_base_2, time_f, fsk_label))
+  
+
+
+```
+
+
+```{r}
+
+  
+reversal_probs_2 <- probabilities_symkevi_better_fit_2 %>% 
+  mutate(fsk_label = as.character(fsk_label), time = as.character(time_f)) %>%
+  inner_join(probabilities_symkevi_better_observed %>% mutate(fsk_label = as.character(fsk_label), time = as.character(time)) )
+
+reversal_probs_2 %>% pivot_longer(starts_with("probability"), names_to = "type", values_to = "prob_reversal", names_prefix = "probability_reversal_") %>%
+  ggplot(aes(x = time, y = prob_reversal, color = type, group = type)) + 
+    geom_ribbon(aes(x = as.character(time), ymax = observed_ci_upper, ymin = observed_ci_lower, group = fsk_label), inherit.aes = FALSE, data = reversal_probs_2, color = FALSE, alpha = 0.3) +
+    geom_line() + facet_wrap(~fsk_label)
+
+```
+
