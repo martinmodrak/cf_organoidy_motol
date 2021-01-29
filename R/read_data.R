@@ -1,7 +1,9 @@
 
 
-read_single_data <- function(file, patient, date) {
-  cat(paste0("Reading ", file, "\n"))
+read_single_data <- function(file, patient, date, verbose = FALSE) {
+  if(verbose) {
+    cat(paste0("Reading ", file, "\n"))
+  }
 
   #TODO back to using rows 2 - 4, handle overwrite in "04-CF 20200820.xlsx" explicitly
 
@@ -23,12 +25,12 @@ read_single_data <- function(file, patient, date) {
   long
 }
 
-read_patient_data <- function(ID) {
-  files <- list.files(paste0("DATA/",ID), pattern = paste0("^",ID, " [0-9]*\\.xlsx$"))
+read_patient_data <- function(ID, verbose = FALSE) {
+  files <- list.files(paste0("data_orig/",ID), pattern = paste0("^",ID, " [0-9]*\\.xlsx$"))
   data_list <- list()
   for(f in files) {
     date_str <- substr(f, start = str_length(ID) + 1, stop = str_length(f) - 4)
-    data_list[[f]] <- read_single_data(paste0("DATA/", ID, "/", f), ID, ymd(date_str))
+    data_list[[f]] <- read_single_data(paste0("data_orig/", ID, "/", f), ID, ymd(date_str), verbose)
   }
 
   do.call(rbind, data_list)
@@ -36,8 +38,9 @@ read_patient_data <- function(ID) {
 
 fsk_levels <- 5 * (1/2.5)^(7:0)
 
-mix_mapping <- data.frame(mix = c(as.character(1:8), letters[1:8]), fsk_concentration = rep(fsk_levels, 2),
-                          has_770 = c(rep(FALSE, 8), rep(TRUE, 8)))
+mix_mapping <- data.frame(mix = c(as.character(1:8), letters[1:8]), fsk_concentration = rep(fsk_levels, 2)
+                          #has_770 = c(rep(FALSE, 8), rep(TRUE, 8))
+                          )
 
 well_mapping_2_2 <- data.frame(well = 1:96,
                                mix = c(rep(rep(as.character(1:8), each = 2), 2),
@@ -55,43 +58,104 @@ well_mapping_2_2 <- data.frame(well = 1:96,
 
 well_mapping_1_3 <- well_mapping_2_2 %>%
   mutate(type = if_else(well >= 33 & well <= 48, "Kaftrio", type),
-         p = if_else(well >= 33 & well <= 48, "raw_data", p))
+         p = if_else(well >= 33 & well <= 48, "raw_data", p)
+         )
 
 well_mapping <- rbind(
   well_mapping_1_3 %>% mutate(mapping = "1_3"),
   well_mapping_2_2 %>% mutate(mapping = "2_2")
-) %>%
-  mutate(
-    type = factor(type, levels = c("FskOnly", "Symkevi", "Kaftrio")),
-    fsk_label = factor(fsk_concentration, levels = fsk_levels, labels = as.character(round(fsk_levels, 3))),
-    fsk_label_ord = factor(fsk_concentration, levels = fsk_levels, labels = as.character(round(fsk_levels, 3)), ordered = TRUE)
-  )
+)
 
-read_raw_data <- function() {
-  all_patients <- list()
-  for(ID in list.dirs("DATA/", full.names = FALSE, recursive = FALSE)) {
-    all_patients[[ID]] <- read_patient_data(ID)
+read_area_data <- function(verbose = FALSE) {
+  collected_data_file <- here::here("area_data.csv")
+  if(file.exists(collected_data_file)) {
+    if(verbose) {
+      cat("Preprocessed data exists, reading\n")
+    }
+    area_data <- readr::read_csv(collected_data_file, col_types = cols(
+      well = col_integer(),
+      time = col_integer(),
+      area = col_double(),
+      patient = col_character(),
+      date = col_date(format = ""),
+      filename = col_character(),
+      mapping = col_character(),
+      mix = col_character(),
+      replicate = col_character(),
+      type = col_character(),
+      fsk_concentration = col_double()
+    ))
+  } else {
+    all_patients <- list()
+    for(ID in list.dirs("data_orig/", full.names = FALSE, recursive = FALSE)) {
+      all_patients[[ID]] <- read_patient_data(ID, verbose)
+    }
+
+    map_1_3_files <- c("04-CF 20200820.xlsx", "21-CF 20200813.xlsx", "41-CF 20200820.xlsx",
+                       "41-CF 20200813.xlsx", "58-CF 20200813.xlsx", "59-CF 20200813.xlsx"
+    )
+
+    raw_data <- do.call(rbind, all_patients) %>%
+      mutate(mapping = if_else(filename %in% map_1_3_files, "1_3", "2_2")) %>%
+      inner_join(well_mapping, by = c("well", "mapping")) %>%
+      filter(!is.na(area), area != 0) %>%
+      ungroup()
+
+    # Remove some stray wells
+    area_data <- raw_data %>% filter(!(well == 48 & patient == "04-CF" & date == ymd("20200820")),
+                                    !(well == 64 & patient == "21-CF" & date == ymd("20200918")),
+                                    !(well %in% c(40, 45) & patient == "68-CF" & date == ymd("20201021")),
+                                    !(well %in% c(17, 48) & filename == "41-CF 20200820.xlsx"),
+                                    !(well >= 33 & well <= 72 & filename == "64-CF 20201002.xlsx")
+    )
+
+    check_data_integrity(area_data)
+
+    area_data <- area_data %>% select(-origin, -p)
+
+    readr::write_csv(area_data, collected_data_file)
   }
 
-  map_1_3_files <- c("04-CF 20200820.xlsx", "21-CF 20200813.xlsx", "41-CF 20200820.xlsx",
-                     "41-CF 20200813.xlsx", "58-CF 20200813.xlsx", "59-CF 20200813.xlsx"
-  )
+  area_data %>% rebuild_factors()
+}
 
-  raw_data <- do.call(rbind, all_patients) %>%
-    mutate(mapping = if_else(filename %in% map_1_3_files, "1_3", "2_2")) %>%
-    inner_join(well_mapping, by = c("well", "mapping")) %>%
-    filter(!is.na(area), area != 0) %>%
-    ungroup()
+rebuild_factors <- function(data) {
+  data %>%
+    mutate(
+      type = factor(type, levels = c("FskOnly", "Symkevi", "Kaftrio")),
+      fsk_label = factor(fsk_concentration, levels = fsk_levels, labels = as.character(round(fsk_levels, 3))),
+      fsk_label_ord = factor(fsk_concentration, levels = fsk_levels, labels = as.character(round(fsk_levels, 3)), ordered = TRUE)
+    )
+}
 
-  # Quick hack to remove some stray wells, should be resolved later
-  raw_data <- raw_data %>% filter(!(well == 48 & patient == "04-CF" & date == ymd("20200820")),
-                                  !(well == 64 & patient == "21-CF" & date == ymd("20200918")),
-                                  !(well %in% c(40, 45) & patient == "68-CF" & date == ymd("20201021")),
-                                  !(well %in% c(17, 48) & filename == "41-CF 20200820.xlsx"),
-                                  !(well >= 33 & well <= 72 & filename == "64-CF 20201002.xlsx")
-  )
+check_data_integrity <- function(raw_data) {
 
-  raw_data
+  missing_timepoints <-  raw_data %>% group_by(patient, date, well) %>% summarise(count = n(), .groups = "drop") %>% filter(count != 7)
+  if(nrow(missing_timepoints) > 0) {
+    print(missing_timepoints)
+    stop("Missing timepoints")
+  }
+
+  missing_duplicates <- raw_data %>% group_by(patient, origin, type, date, fsk_concentration, filename) %>% summarise(count = n(), .groups = "drop") %>%
+    filter(count != 14,
+           # For some, this is indeed the case
+           filename != "21-CF 20200918.xlsx" & type != "Symkevi" & fsk_concentration != 0.02048
+    )
+
+  if(nrow(missing_duplicates) > 0) {
+    print(missing_duplicates)
+    stop("Missing duplicates")
+  }
+
+
+  missing_concentrations <- raw_data %>% select(patient, origin, type, date, p,  fsk_concentration) %>% distinct() %>%
+    group_by(patient, origin, type, date, p) %>%
+    summarise(count = n(), .groups = "drop") %>% filter((origin != "patient" & count != 4) | (origin == "patient"  & count != 8))
+
+  if(nrow(missing_concentrations) > 0) {
+    print(missing_concentrations)
+    stop("Missing concentrations")
+  }
 }
 
 compute_derived_quantitites <- function(raw_data) {
@@ -119,5 +183,7 @@ raw_data_to_auc <- function(raw_data) {
   raw_data %>%
     group_by(patient, date, well, filename, mapping) %>%
     summarise(auc = sum((time[2:7] - time[1:6]) * (swell[1:6] + swell[2:7]) / 2), .groups = "drop") %>%
-    inner_join(well_mapping, by = c("well", "mapping"))
+    inner_join(well_mapping, by = c("well", "mapping")) %>%
+    ungroup() %>%
+    rebuild_factors()
 }

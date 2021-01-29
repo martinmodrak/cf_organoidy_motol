@@ -42,5 +42,5 @@ vignettes/*.pdf
 *.html
 *.nb.html
 
-DATA
+data_orig
 local_temp_data/

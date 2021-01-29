@@ -20,7 +20,7 @@ if(!dir.exists(cache_dir)) {
 ```
 
 ```{r}
-raw_data <- read_raw_data() %>% compute_derived_quantitites() %>% remove_few_replicates
+raw_data <- read_area_data() %>% compute_derived_quantitites() %>% remove_few_replicates
 
 auc <- raw_data_to_auc(raw_data)
 ```
@@ -83,17 +83,7 @@ within_patient_variability_auc %>%
 
 ## Reversals
 
-```{r}
-reversed_patients <- auc_date_avg %>% 
-  filter(type != "FskOnly") %>%
-  pivot_wider(names_from = "type",values_from = "date_avg_auc") %>%
-  filter(Symkevi > Kaftrio) %>%
-  pull(patient) %>% unique()
 
-for(r_p in reversed_patients) {
-  print(plot_swell(raw_data %>% filter(patient == r_p), alpha = 1) + ggtitle(r_p))
-}
-```
 
 ```{r}
 probabilities_symkevi_better_observed <- 

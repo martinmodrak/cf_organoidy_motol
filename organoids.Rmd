@@ -1,17 +1,20 @@
 ---
-title: "Organoids"
+title: "First report: Kaftrio® vs. Symkevi® in intestinal organoids\n Supplementary Statistical Analysis"
+abstract: "This document contains exploratory plots and formal statistical analysis for the data reported in the main manuscript. Complete source code and all data to reporduce this report are available via Zenodo, DOI: 10.5281/zenodo.4478985 "
 output: 
-  bookdown::html_document2:
-    code_folding: hide
+  bookdown::pdf_document2:
+#    code_folding: hide
+    toc: TRUE
 ---
 
-```{r setup, message = FALSE, warning=FALSE, results="hide"}
+```{r setup, message = FALSE, warning=FALSE, results="hide", echo=FALSE}
 library(tidyverse)
-knitr::opts_chunk$set(cache = TRUE)
+knitr::opts_chunk$set(cache = TRUE, echo = FALSE, fig.height = unit(3.125, "cm"), fig.width = unit(10, "cm"))
 devtools::load_all()
 library(brms)
 library(readxl)
 library(lubridate)
+library(patchwork)
 theme_set(cowplot::theme_cowplot())
 options(mc.cores = parallel::detectCores(), brms.backend = "cmdstanr")
 rstan::rstan_options(auto_write = TRUE)
@@ -24,47 +27,26 @@ if(!dir.exists(cache_dir)) {
 
 ```{r}
 primary_concentration_labels <- c("0.128", "0.32", "0.8")
+fsk_label_x_scale <- scale_x_discrete("Forskolin (\u03BCM)")
 ```
 
 
-# Read and check the data 
+# Definitions 
+
+Throughout this document, we use several measures: 
+
+- **area**: the raw area from the data
+- **swell**: percentage change from area at time 0 (i.e. -100 means decrease to zero, +100 means the area increased to twice the area at time 0)
+- **AUC**: area under the curve, i.e. the integral of the swell curve (can be negative)
+- **Plate-average AUC**: The average of AUC over both (two) wells with the same condition on the same well plate.
+- **Patient-average AUC**: The average of plate-average AUC across all well plates with the cells of the same patient, ran on different days (2-3 well plates per patient)
+
 
 ```{r}
-raw_data <- read_raw_data() 
+raw_data <- read_area_data() 
 ```
 
 
-
-```{r}
-# Check data integrity
-
-missing_timepoints <-  raw_data %>% group_by(patient, date, well) %>% summarise(count = n(), .groups = "drop") %>% filter(count != 7)
-if(nrow(missing_timepoints) > 0) {
-  print(missing_timepoints)
-  stop("Missing timepoints")
-}
-
-missing_duplicates <- raw_data %>% group_by(patient, origin, type, date, fsk_concentration, filename) %>% summarise(count = n(), .groups = "drop") %>% 
-  filter(count != 14,
-# For some, this is indeed the case                                                                                                         
-      filename != "21-CF 20200918.xlsx" & type != "Symkevi" & fsk_concentration != 0.02048
-      )
-
-if(nrow(missing_duplicates) > 0) {
-  print(missing_duplicates)
-  stop("Missing duplicates")
-}
-
-
-missing_concentrations <- raw_data %>% select(patient, origin, type, date, p,  fsk_concentration) %>% distinct() %>% 
-  group_by(patient, origin, type, date, p) %>%
-  summarise(count = n(), .groups = "drop") %>% filter((origin != "patient" & count != 4) | (origin == "patient"  & count != 8))
-
-if(nrow(missing_concentrations) > 0) {
-  print(missing_concentrations)
-  stop("Missing concentrations")
-}
-```
 
 ```{r}
 raw_data <- raw_data %>% compute_derived_quantitites() %>% remove_few_replicates
@@ -73,79 +55,108 @@ auc <- raw_data_to_auc(raw_data)
 
 ```
 
-The data are checked to match the hand-derived summaries.
+The data are checked to match the hand-derived summaries by first author.
 
 ```{r}
-# Check matching to original summaries
-
-auc_date_avg <- auc %>%
-  group_by(patient, date, fsk_concentration, fsk_label, type,filename) %>% 
-  summarise(date_avg_auc = mean(auc), .groups = "drop")
-
-auc_pat_avg <- auc_date_avg %>%   
-  group_by(patient, fsk_concentration, type) %>% 
-  summarise(pat_avg_auc = mean(date_avg_auc), .groups = "drop")
-
-summary_manual_raw <- read_excel("DATA/results_summary 20201130_new.xlsx", range = "A1:K18") 
-summary_manual <- summary_manual_raw %>% 
-  pivot_longer(cols = c(starts_with("Symkevi"), starts_with("Kaftrio")), names_to = c("type", "fsk_concentration"), values_to = "pat_avg_auc", names_sep = " ") %>%
-  mutate(fsk_concentration = gsub(",", ".", fsk_concentration, fixed = TRUE))
-
-matched <- auc_pat_avg %>% mutate(fsk_concentration = as.character(round(fsk_concentration, 3))) %>%
-  mutate(fsk_concentration = if_else(fsk_concentration == "0.008", "0", fsk_concentration)) %>%
-  inner_join(summary_manual, by = c("patient" = "ID", "type", "fsk_concentration"))
-
-if(nrow(matched) != nrow(summary_manual)) {
-  print(summary_manual %>% anti_join(matched, by = c("ID" = "patient", "fsk_concentration", "type")) )
-  stop("Not all matched")
-}
-
-mismatched <- matched %>% filter(abs(pat_avg_auc.x - pat_avg_auc.y) > 1e-5) %>%
-  filter(patient != "10-CF")
-warning("Ignoring mismatch in 10-CF")
-
-if(nrow(mismatched) > 0) {
-  print(mismatched)
-  stop("Mismatched")
+if(file.exists("data_orig/results_summary 20201130_new.xlsx")) {
+  # Check matching to original summaries
+  auc_plate_avg <- auc %>%
+    group_by(patient, date, fsk_concentration, fsk_label, type,filename) %>% 
+    summarise(plate_avg_auc = mean(auc), 
+              plate_sd_auc = sd(auc), .groups = "drop") %>%
+    mutate(plate_sd_auc = replace_na(plate_sd_auc, 0)) # Replacing sd for 21-CF 20200918, FSK = 0.02 where we have only one replicate :-( due to error
+  
+  auc_pat_avg <- auc_plate_avg %>%   
+    group_by(patient, fsk_concentration, fsk_label, type) %>% 
+    summarise(pat_avg_auc = mean(plate_avg_auc), 
+              pat_sd_auc = sd(plate_avg_auc), 
+              pat_sd_auc_prop = sqrt(mean(plate_sd_auc ^ 2) /n()), 
+              n_replicates = n(),
+              .groups = "drop")
+  
+  summary_manual_raw <- read_excel("data_orig/results_summary 20201130_new.xlsx", range = "A1:K18") 
+  summary_manual <- summary_manual_raw %>% 
+    pivot_longer(cols = c(starts_with("Symkevi"), starts_with("Kaftrio")), names_to = c("type", "fsk_concentration"), values_to = "pat_avg_auc", names_sep = " ") %>%
+    mutate(fsk_concentration = gsub(",", ".", fsk_concentration, fixed = TRUE))
+  
+  matched <- auc_pat_avg %>% mutate(fsk_concentration = as.character(round(fsk_concentration, 3))) %>%
+    mutate(fsk_concentration = if_else(fsk_concentration == "0.008", "0", fsk_concentration)) %>%
+    inner_join(summary_manual, by = c("patient" = "ID", "type", "fsk_concentration"))
+  
+  if(nrow(matched) != nrow(summary_manual)) {
+    print(summary_manual %>% anti_join(matched, by = c("ID" = "patient", "fsk_concentration", "type")) )
+    stop("Not all matched")
+  }
+  
+  mismatched <- matched %>% filter(abs(pat_avg_auc.x - pat_avg_auc.y) > 1e-5) 
+  
+  if(nrow(mismatched) > 0) {
+    print(mismatched)
+    stop("Mismatched")
+  }
 }
 ```
 
-# Is the control condition flat?
+# Checks and controls
 
-```{r}
+## Is the control condition flat?
+
+Here we examine only the control (Forskolin only) condition. Figures \@ref(fig:area-control) -- \@ref(fig:auc-control)  show the behavior of individual wells while Figure  \@ref(fig:plate-avg-control) shows the plate averages 
+
+```{r area-control, fig.cap = "The raw area values of the control condition for each Forskolin concentration over time. Each line represents a single well."}
 raw_data %>% 
   filter(type == "FskOnly") %>%
   ggplot(aes(x = time, y = area, group = interaction(patient, date, well))) + 
   geom_line(alpha = 0.3) +
   facet_wrap( ~ fsk_label)
 
+```
+
+```{r swell-control, fig.cap = "The swell values of the control condition for each Forskolin concentration over time. Each line represents a single well."}
 raw_data %>% 
   filter(type == "FskOnly") %>%
   ggplot(aes(x = time, y = swell, group = interaction(patient, date, well))) + 
   geom_line(alpha = 0.3) +
+  scale_y_continuous("Swell [%]") +
   facet_wrap( ~ fsk_label)
 
+```
 
+```{r auc-control, fig.cap = "AUC values for the control condition per well and individual forskolin concentrations. Each dot represents a single well."}
 auc %>% 
   filter(type == "FskOnly") %>%
   ggplot(aes(x = fsk_label, y = auc)) +
+  scale_y_continuous("AUC") +
+  fsk_label_x_scale +
   geom_hline(yintercept = 0, color = "blue") + 
   geom_jitter(alpha = 0.3, width = 0.3, height = 0)
 
-auc_date_avg %>%
-  filter(type == "FskOnly") %>%
-  ggplot(aes(x = fsk_label, y = date_avg_auc, group = interaction(patient, date))) +
-  geom_hline(yintercept = 0, color = "blue") +
-  geom_line(alpha = 0.3) 
 ```
 
 
+```{r plate-avg-control, fig.cap = "Plate-average AUC for the control condition across all Forskolin concentrations.  Each line represents a single well plate."}
+auc_plate_avg %>%
+  filter(type == "FskOnly") %>%
+  ggplot(aes(x = fsk_label, y = plate_avg_auc, group = interaction(patient, date))) +
+  geom_hline(yintercept = 0, color = "blue") +
+  geom_line(alpha = 0.3)  + 
+  scale_y_continuous("Plate-average AUC") + 
+  fsk_label_x_scale
+```
 
-# Is there a difference at t = 0?
+In all views of the data, the control condition is very flat, i.e. except for a 
+small number of wells, we observe
+almost no growth in the control condition except for the highest Forskolin concetration, 
+where the growth is still quite small. There is one well that is outlier in swell and AUC, 
+but is actually well within the range for raw area, presumably because of problematic measurement at t = 0.
 
-Diff in area at baseline
+## Is there a difference already at t = 0?
 
-```{r}
+We also slightly suspected, there might a difference in area at baseline, 
+i.e. after incubation with tezacaftor/tezacaftor + elexacaftor but prior to addition
+of ivacaftor and forskolin. The values at baseline are shown in Figure \@ref(fig:areazero).
+
+```{r areazero, fig.cap = "Area at time 0 across conditions. Each dot is a single well. The boxplots show median, 1st and 3rd quartile and the whisker stretch to 1.5 \U00D7 IQR."}
 raw_data %>% 
   filter(time == 0) %>%
   ggplot(aes(x = type, y = area)) + 
@@ -153,42 +164,77 @@ raw_data %>%
   geom_jitter(alpha = 0.3, width = 0.2, height = 0)  + ggtitle("Area at t = 0")
 ```
 
-```{r}
-t.test(raw_data %>% filter(time == 0, type == "Symkevi") %>% pull(area), raw_data %>% filter(time == 0, type == "Kaftrio") %>% pull(area))
+There seems to be a very slight increase in the treated conditions. We can check this with a 
+linear model for logarithm of the area. Below is the summary of the fit:  
 
-t.test(raw_data %>% filter(time == 0, type == "FskOnly") %>% pull(area), raw_data %>% filter(time == 0, type == "Symkevi") %>% pull(area))
+```{r}
+area0 <- raw_data %>% filter(time == 0)
+fit_area0 <- lm(log(area) ~ type, data = area0)
+summary(fit_area0)
+```
+
+And a pairwise comparison of all conditions using `TukeyHSD`.
+
+```{r}
+TukeyHSD(aov(fit_area0))$type
+```
+
+There seems to be a _very small_ (several percent increase) but systematic difference in area between Kaftrio and 
+the other treatments at time 0. The difference between Symkevi and control (Foroskolin only) is not significant
+after correction for multiple comparisons.
+
+
+# Exploratory plots
+
+We note that across various visualisations in Figures \@ref(fig:areaallsep) -- \@ref(fig:plateavg-all), it is quite clear that the difference between control, Symkevi and Kaftrio is notable and much larger than the variability in the data.
+
+```{r fig1, fig.width=ggplot2::unit(16, "cm"), fig.height=ggplot2::unit(20, "cm")}
+# Generate Figure 1 for the manuscript
+
+fig1 <- auc_pat_avg %>%
+  group_by(patient) %>%
+  mutate(patient_label = paste0(patient, " (n = ", n_replicates, ")")) %>%
+  ungroup() %>%
+  ggplot(aes(x = fsk_label, y = pat_avg_auc, ymin = pat_avg_auc - pat_sd_auc, ymax = pat_avg_auc + pat_sd_auc, group = type)) +
+    geom_point(size = 2, position = position_dodge(width = 0.2)) + geom_errorbar(width = 0.1, position = position_dodge(width = 0.2)) + geom_line(aes(linetype = type)) +
+    scale_linetype_manual(values = c("FskOnly" = "solid", "Symkevi" = "longdash", "Kaftrio" = "dotted")) + 
+    fsk_label_x_scale +
+    scale_y_continuous("Organoid Swelling (mean AUC t0-60)") +
+    facet_wrap(~patient_label, ncol = 3) + 
+    theme(legend.position = "none", panel.grid.major.y = element_line(color = "#cccccc"),
+          axis.text = element_text(size = 14),
+          strip.text = element_text(size = 16),
+          axis.title = element_text(size = 16))
+
+#fig1
+ggsave("fig1.png", fig1, width = ggplot2::unit(16, "cm"), height=ggplot2::unit(20, "cm"), dpi = 600)
+
+#Requires inkscape 1.0 or later
+# inkscape_path <-'C:/Program Files/Inkscape/bin/inkscape.exe'
+# if(!file.exists(inkscape_path)) {
+#   warning("Could not find inkscape, will not convert to .wmf")
+# } else {
+#     input_file <- paste0("fig1.svg")
+#     output_file <- paste0("fig1.wmf")
+#     system(paste0('"', inkscape_path,'" --without-gui --actions="export-filename:', output_file, ';"', '"', input_file, '"'))
+# }
 
 ```
 
-There seems to be a _very small_ systematic difference in area between all treatments at time 0.
 
-TODO: lepe diff at 0
-
-
-# Effect of treatments on organoid growth
-
-## Plots, descriptive statistics
-
-Throughout this notebook, we use several measures: 
-
-- **area**: the raw area from the data
-- **swell**: percentage change from area at time 0 (i.e. -100 means decrease to zero, +100 means the area increased to twice the area at time 0)
-- **AUC**: area under the curve, i.e. the integral of the swell curve (can be negative)
-
-### Plots at the individual well resolution
-
-```{r areaallsep, fig.cap="Raw area by time, treatment and forskolin concentration. Each line is a single well."}
+```{r areaallsep,  fig.height = unit(4, "cm"), fig.cap="Raw area by time, treatment and forskolin concentration. Each line is a single well."}
 raw_data %>% ggplot(aes(x = time, y = area, group = interaction(patient, date, well))) + 
-  geom_line(alpha = 0.3) +
+  geom_line(alpha = 0.2) +
   facet_grid(type ~ fsk_label)
 ```
 
-```{r areaalloverlay, fig.cap="Raw area by time, treatment and forskolin concentration, overlaid. Each line is a single well." }
+
+```{r areaalloverlay, fig.height = unit(4, "cm"), fig.cap="Raw area by time, treatment and forskolin concentration, overlaid. Each line is a single well." }
 
 type_color_scale <-   scale_color_brewer(type = "qual", guide = guide_legend(override.aes = list(alpha = 1)))
 
-plot_area <- function(raw_data, alpha = 0.3) {
-  raw_data %>% 
+plot_area <- function(raw_data, alpha = 0.15) {
+  raw_data %>%
     ggplot(aes(x = time, y = area, color = type, group = interaction(patient, date, well))) + 
     geom_line(alpha = alpha) +
     type_color_scale +
@@ -198,6 +244,7 @@ plot_area <- function(raw_data, alpha = 0.3) {
 plot_area(raw_data)
 ```
 
+
 ```{r swellallsep, fig.cap="Swell by time, treatment and forskolin concentration. Each line is a single well."}
 raw_data %>% 
   ggplot(aes(x = time, y = swell, group = interaction(patient, date, well))) + 
@@ -205,7 +252,9 @@ raw_data %>%
   facet_grid(type ~ fsk_label)
 
 ```
-```{r swellalloverlay, fig.cap = "Swell by time, treatment and forskolin concentration, overlaid. Each line is a single well."}
+
+
+```{r swellalloverlay, fig.height = unit(4, "cm"),  fig.cap = "Swell by time, treatment and forskolin concentration, overlaid. Each line is a single well."}
 
 
 plot_swell <- function(raw_data, alpha = 0.3) {
@@ -223,59 +272,76 @@ plot_swell(raw_data)
 ```
 
 
-### Plots at the experiment/well plate level
-
-```{r}
-auc_date_avg %>%
-  ggplot(aes(x = fsk_label, y = date_avg_auc, group = interaction(patient, date))) +
+```{r plateavg-allsep, fig.cap = "Plate-average AUC for all conditions. Each line is data from a single well plate for the respective condition."}
+auc_plate_avg %>%
+  ggplot(aes(x = fsk_label, y = plate_avg_auc, group = interaction(patient, date))) +
   geom_line(alpha = 0.3) +
   facet_wrap(~type) + 
+  fsk_label_x_scale +
+  scale_y_continuous("Plate-average AUC") +
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
 
 ```
 
 
-```{r}
+```{r plateavg-all, fig.cap = "Plate-average AUC for all conditions, overlaid. Each line is data from a single well plate for the given condition."}
 
-auc_date_avg %>%
-  ggplot(aes(x = fsk_label, y = date_avg_auc, color = type, group = interaction(patient, date, type))) +
+auc_plate_avg %>%
+  ggplot(aes(x = fsk_label, y = plate_avg_auc, color = type, group = interaction(patient, date, type))) +
   geom_line(alpha = 0.5) +
+  fsk_label_x_scale +
+  scale_y_continuous("Plate-average AUC") +
   type_color_scale
 
 ```
 
+# Effect of treatments on organoid growth
 
 
+Since we have shown that the control condition is very close to completely flat and
+we cannot exactly pair control and treatment conditions, all of the models work with
+only the Symkevi and Kaftrio data.
 
-## Modelling
-
-### Frequentist models
+## Frequentist models
 
 We test two linear model variants: the _AUC_ model focuses on the AUC metric, which is modelled as normally distributed with the full interaction of the forskolin level and drug as predictors. In the _area_ model we model the logarithm of area of the organoids explicitly, assuming normal distribution and treating the log of the area at time 0 and full interaction of time, forskolin level and drug as predictors (i.e. we assume that the area at time 0 is multiplied by a number that is specific for each drug and time step but does not differ between patients and replicates).
 
-We use the `TukeyHSD` method to correct for multiple comparisons.
+We use the `TukeyHSD` method to correct for multiple comparisons. First the summary of the AUC model:
 
 ```{r}
 fit_lm_auc <- lm(auc ~ fsk_label * type, data = auc %>% filter(type != "FskOnly"))
-fit_lm_auc
 summary(fit_lm_auc)
+```
+And the associated comparisons between Symkevi and Kaftrio using `TukeyHSD`. 
+The `diff` column represents actual expected difference in AUC between the two conditions,
+`lwr` and `upr` are the bounds of 95% confidence interval.
+
+```{r}
 hsd_res_auc <- TukeyHSD(aov(fit_lm_auc))
 interesting_res_auc <- hsd_res_auc$`fsk_label:type`[paste0(levels(auc$fsk_label), ":Kaftrio-",levels(auc$fsk_label),":Symkevi"),]
 interesting_res_auc
 
 interesting_res_auc_primary <- hsd_res_auc$`fsk_label:type`[paste0(primary_concentration_labels, ":Kaftrio-",primary_concentration_labels,":Symkevi"),]
 
-
 ```
 
-For the AUC model we see noticeable difference between Symkevi and Kaftrio for all forskolin concentration (all p < 0.001), and the difference is large - for all of the primary concentrations (`r paste0(primary_concentration_labels, collapse = ", ")`) the 95% CI exclude absolute difference in AUC < `r round(min(interesting_res_auc_primary[,"lwr"]))`.
 
+```{r}
+min_lower_auc <- min(interesting_res_auc_primary[,"lwr"])
+min_difference_auc <- min(interesting_res_auc_primary[,"diff"])
+max_difference_auc <- max(interesting_res_auc_primary[,"upr"])
+mean_auc_symkevi_08 <-  auc %>% filter(type == "Symkevi", fsk_label == "0.8")  %>% pull(auc) %>% mean()
+```
+
+
+For the AUC model we see noticeable difference between Symkevi and Kaftrio for all forskolin concentration (all p < 0.001), and the difference is large - for all of the primary concentrations (`r paste0(primary_concentration_labels, collapse = ", ")` µM) all the point estimates are larger than `round(min_difference_auc)` in favor of Kaftrio and the union of all 95% CIs is (`r round(min_difference_auc)`;`r round(min_difference_auc)`) . To put this number in perspective, the average AUC in the Symkevi condition and with forskolin concentration of 0.8 µM is `r round(mean_auc_symkevi_08)`. 
+
+Next we inspect the summary of the area model:
 
 ```{r}
 raw_data_to_fit <- raw_data %>% 
   filter(type != "FskOnly", time > 0) %>%
-  mutate(is_kaftrio = factor(type == "Kaftrio"),
-         log_area = log(area),
+  mutate(log_area = log(area),
          log_base_area = log(base_area),
          time_f = factor(time))
 
@@ -283,16 +349,30 @@ raw_data_to_fit <- raw_data %>%
 fit_lm_area_base <- lm(log_area ~ log_base_area + type*time_f*fsk_label, data = raw_data_to_fit)
 summary(fit_lm_area_base)
 
-hsd_res_area <- TukeyHSD(aov(fit_lm_area_base), which = c("type:time_f:fsk_label"))
+
+```
+Let us note that the coefficient for the are at time 0 (`log_base_area`) is fitted as almost exactly 1, which is a bit of support for the area model being a good fit for the data.
+
+
+And the comparisons of interest via `TukeyHSD`. Unlike in the AUC model, in the area model, the
+`diff` column and the associated confidence intervals are on the log scale. First we list those differences where adjusted p < 0.001:
+
+```{r}
+hsd_res_area <- suppressWarnings(TukeyHSD(aov(fit_lm_area_base), which = c("type:time_f:fsk_label")))
 interesting_cases_area <- crossing(fsk = levels(auc$fsk_label), time = levels(raw_data_to_fit$time_f)) %>%
   mutate(name = paste0("Kaftrio:", time,":", fsk, "-Symkevi:", time, ":", fsk)) %>% 
   pull(name)
 interesting_res_area <-  hsd_res_area$`type:time_f:fsk_label`[interesting_cases_area,]
 interesting_res_area[interesting_res_area[,"p adj"] < 1e-3,]
+```
+And here are all the remaining: 
+
+```{r}
 interesting_res_area[interesting_res_area[,"p adj"] >= 1e-3,]
+
 ```
 
-Let us note that the coefficient for the are at time 0 (`log_base_area`) is fitted as almost exactly 1, which is a bit of support for this model being a good fit for the data.
+
 
 ```{r}
 interesting_cases_area_primary_60 <- data.frame(fsk = primary_concentration_labels, time = 60) %>%
@@ -313,23 +393,24 @@ min_lwr_60 <- min(interesting_res_area_primary_60[,"lwr"])
 For the area model we see statistically significant relative increase in area for Kaftrio over Symkevi when forskolin concentration is larger than 0.128 or when time > 10 minutes (all p < 0.001) at 60 minutes and for the primary concentrations (`r paste0(primary_concentration_labels, collapse = ", ")`) the model rules out less than `r round((exp(min_lwr_60) - 1) * 100)`% increase in area with Kaftrio over Symkevi for all forskolin concentrations. 
 
 
-### Bayesian mixed-effects models
+## Bayesian mixed-effects models
 
-Similarly to the frequentist models, we test an area and an AUC model. For the are model, we add a varying intercept and varying effect of Kaftrio per patient (i.e. both the absolute growth and the effect of Kaftrio is allowed to vary between patients) and a varying intercept per each time series (i.e. the growth in each well is allowed to vary a bit).
+Similarly to the frequentist models, we test an area and an AUC model. For the area model, we add a varying intercept and varying effect of Kaftrio per patient (i.e. both the absolute growth and the effect of Kaftrio is allowed to vary between patients) and a varying intercept per each time series (i.e. the growth in each well is allowed to vary a bit). We use the `brms` package for fitting.
+
+Below is the summary of the fitted area model:
 
 ```{r}
 raw_data_area_fit <- raw_data %>% 
-  filter(fsk_label %in% primary_concentration_labels, 
+  filter(fsk_label %in% c(primary_concentration_labels, "2", "5"), 
          type != "FskOnly", time > 0) %>%
-  mutate(is_kaftrio = factor(type == "Kaftrio"),
-         log_base_area = log(base_area),
+  mutate(log_base_area = log(base_area),
          log_area = log(area),
          filename_well = paste0(filename, "__", well),
          time_f = factor(time))
 
-if(!identical(as.character(unique(raw_data_area_fit$fsk_label)), primary_concentration_labels)) {
-  stop("Bad filter")
-}
+# if(!identical(as.character(unique(raw_data_area_fit$fsk_label)), primary_concentration_labels)) {
+#   stop("Bad filter")
+# }
 
 f_area_vs_base_1 <-log_area ~ log_base_area + fsk_label * type*time_f + 
   (1 + type || patient) + (1 || filename_well) 
@@ -340,9 +421,10 @@ fit_area_vs_base_1 <- brm_with_cache(f_area_vs_base_1, data = raw_data_area_fit,
 fit_area_vs_base_1
 ```
 
-We can then summarise the posterior credible intervals for difference between Kaftrio and Symkevi across forskolin concentrations and times - all intervals are very far from zero, indicating strong support for Kaftrio being beneficial.
+We can then summarise the posterior credible intervals for difference between Kaftrio and Symkevi across forskolin concentrations and times (Figure \@ref(fig:resultsareabrms)) - all intervals are very far from zero, indicating strong support for Kaftrio being beneficial.
 
-```{r}
+
+```{r resultsareabrms, fig.cap="Posterior means (points) and 95% credible intervals (lines) for the difference in logarithm of the area between Kaftrio and Symkevi for each of the main forskolin concentrations.", fig.height=2}
 hypotheses_area <- crossing(fsk_label = primary_concentration_labels, time = 10*(2:6)) %>%
   mutate(hypothesis_string = paste0("typeKaftrio ", 
                              if_else(fsk_label == primary_concentration_labels[1], 
@@ -355,7 +437,9 @@ hypotheses_area_res$hypothesis %>%
   ggplot(aes(x = time, y = Estimate, ymin = CI.Lower, ymax = CI.Upper)) +
   geom_linerange() + geom_point() + geom_hline(yintercept = 0, color = "blue") + facet_wrap(~fsk_label)
 ```
+
 We also fit an AUC model where we also add varying intercept and effect for patients and a varying intercept for experiment (well plate).
+
 
 ```{r, results="hide"}
 auc_data_fit <- auc %>%
@@ -365,14 +449,19 @@ auc_data_fit <- auc %>%
 fit_auc1 <- brm_with_cache(auc ~ fsk_label * type + 
   (1 + type || patient) + (1 || filename) , data = auc_data_fit, family = "gaussian", cache_file = paste0(cache_dir, "/fit_auc1.rds"))
 ```
-We do some posterior predictive checks to test the fit of the model.
 
-```{r}
-pp_check(fit_auc1, "stat_grouped", stat = "sd", group = "fsk_label", nsamples = 4000)
-pp_check(fit_auc1, "stat_grouped", stat = "sd", group = "type", nsamples = 4000)
+This model is somewhat problematic - AUC is mostly a multiplicative measure, but since it is defined to allow negative values, we cannot directly work with the logarithm. We do some posterior predictive checks to test the fit of the model (Figures \@ref(fig:ppcauc-sd-fsk) and \@ref(fig:ppcauc-sd-type)).
+
+```{r ppcauc-sd-fsk, fig.cap="Posterior predictive check for the AUC Bayesian model, grouped by forskolin concentration. The dark vertical bars represent the actual observed standard deviation for each group while the underlying histogram shows model predictions of the standard deviation.", fig.height=2}
+pp_check(fit_auc1, "stat_grouped", stat = "sd", group = "fsk_label", nsamples = 4000, binwidth = 20)
 ```
 
-We see the model has problems fitting the standard deviation, so we test another, more flexible model where the standard deviation is allowed to vary per treatment and forskolin concentration.
+```{r ppcauc-sd-type, fig.cap="Posterior predictive check for the AUC Bayesian model, grouped by condition. The dark vertical bars represent the actual observed standard deviation for each group while the underlying histogram shows model predictions of the standard deviation.", fig.height=2}
+pp_check(fit_auc1, "stat_grouped", stat = "sd", group = "type", nsamples = 4000, binwidth = 20)
+
+```
+
+We see the model has mild problems fitting the standard deviation, so we test another, more flexible model where the standard deviation is allowed to vary per treatment and forskolin concentration. Below is the summary of this second model:
 
 ```{r, results="hide"}
 fit_auc2 <- brm_with_cache(bf(auc ~ fsk_label * type + 
@@ -380,16 +469,25 @@ fit_auc2 <- brm_with_cache(bf(auc ~ fsk_label * type +
 fit_auc2
 ```
 
+Using the same posterior predictive checks as above (Figures \@ref(fig:ppcauc2-sd-fsk) and \@ref(fig:ppcauc2-sd-type)), we see an improvement in fit. 
 
-```{r}
-pp_check(fit_auc2, "stat_grouped", stat = "sd", group = "fsk_label", nsamples = 4000)
-pp_check(fit_auc2, "stat_grouped", stat = "sd", group = "type", nsamples = 4000)
+
+```{r ppcauc2-sd-fsk, fig.cap="Posterior predictive check for the second AUC Bayesian model, grouped by forskolin concentration. The dark vertical bars represent the actual observed standard deviation for each group while the underlying histogram shows model predictions of the standard deviation.", fig.height=2}
+pp_check(fit_auc2, "stat_grouped", stat = "sd", group = "fsk_label", nsamples = 4000, binwidth = 20)
 ```
 
 
-We can then summarise the posterior credible intervals for difference between Kaftrio and Symkevi across forskolin concentrations  - all intervals are very far from zero, indicating strong support for Kaftrio being beneficial.
+```{r ppcauc2-sd-type, fig.cap="Posterior predictive check for the second AUC Bayesian model, grouped by condition. The dark vertical bars represent the actual observed standard deviation for each group while the underlying histogram shows model predictions of the standard deviation.", fig.height=2}
+pp_check(fit_auc2, "stat_grouped", stat = "sd", group = "type", nsamples = 4000, binwidth = 20)
 
-```{r}
+```
+
+
+
+
+We can then summarise the posterior credible intervals for difference between Kaftrio and Symkevi across forskolin concentrations (Figure \@ref(fig:resultsaucbrms)) - all intervals are very far from zero, indicating strong support for Kaftrio being beneficial.
+
+```{r resultsaucbrms, fig.cap="Posterior means (points) and 95% credible intervals (lines) for the difference in AUC between Kaftrio and Symkevi for each of the main forskolin concentrations.", fig.height=2}
 hypotheses_auc <- data.frame(fsk_label = primary_concentration_labels) %>%
   mutate(hypothesis_string = paste0("typeKaftrio ", 
                              if_else(fsk_label == primary_concentration_labels[1], 
@@ -406,21 +504,38 @@ hypotheses_auc_res$hypothesis %>%
 
 # Do some patients show worsening/no improvement on Kaftrio?
 
-First, let us plot the swell of patients that have at least one AUC value higher for Symkevi than Kaftrio:
+Figure \@ref(fig:reversed-patients) shows the swell of patients that have at least one AUC value higher for Symkevi than Kaftrio. We see that except for 58-CF all still show almost no overlap between Kaftrio and Symkevi conditions.
 
-```{r}
-reversed_patients <- auc_date_avg %>% 
+```{r reversed-patients, fig.height= ggplot2::unit(12, "cm"), fig.width= ggplot2::unit(15, "cm"),fig.cap="Swell for all potentially reversed patients. Each line represents a single well."}
+reversed_patients <- auc_plate_avg %>% 
   filter(type != "FskOnly") %>%
-  pivot_wider(names_from = "type",values_from = "date_avg_auc") %>%
+  select(-plate_sd_auc) %>%
+  pivot_wider(names_from = "type",values_from = "plate_avg_auc") %>%
   filter(Symkevi > Kaftrio) %>%
   pull(patient) %>% unique()
 
+full_plot <- NULL
 for(r_p in reversed_patients) {
-  print(plot_swell(raw_data %>% filter(patient == r_p), alpha = 1) + ggtitle(r_p))
+  new_plot <- plot_swell(raw_data %>% filter(patient == r_p), alpha = 1) + ggtitle(paste0(r_p, " - swell"))
+  if(is.null(full_plot)) {
+    full_plot <- new_plot
+  } else {
+    full_plot <- full_plot + new_plot
+  }
 }
-```
 
-We will then fit a linear model separately for each of those patients (focusing on the concentrations `r paste0(primary_concentration_labels, collapse = ", ")` and times > 20 only. We then report the union of all confidence interval across all time-steps, the lowest p-value for all Kaftrio-Symkevi differences and the number of differences that are significant after TukeyHSD procedure.  
+full_plot + plot_layout(guides = "collect")
+
+# for(r_p in reversed_patients) {
+#   print(
+#     auc_plate_avg %>% filter(patient == r_p) %>%   
+#     ggplot(aes(x = fsk_label, y = plate_avg_auc, color = type, group = interaction(patient, date, type))) +
+#     geom_line() + facet_wrap(~date) +
+#     type_color_scale + ggtitle(paste0(r_p, " - AUC"))
+#   )
+# }
+
+```
 
 ```{r}
 rev_results_list <- list()
@@ -429,24 +544,47 @@ for(pt in reversed_patients) {
   fit_lm_area_base_reversed_pt <- lm(log_area ~ log_base_area + type*time_f*fsk_label, data = raw_data_to_fit_reversed)
   
   hsd_res_area_pt <- suppressWarnings(
-    TukeyHSD(aov(fit_lm_area_base_reversed_pt), which = c("type:time_f:fsk_label")))
+    TukeyHSD(aov(fit_lm_area_base_reversed_pt), which = c("type:time_f:fsk_label"))
+  )
   
   interesting_cases_area_pt <- crossing(fsk = primary_concentration_labels, time = as.character(unique(raw_data_to_fit_reversed$time_f))) %>%
     mutate(name = paste0("Kaftrio:", time,":", fsk, "-Symkevi:", time, ":", fsk)) %>% 
     pull(name)
   interesting_res_area_pt <-  hsd_res_area_pt$`type:time_f:fsk_label`[interesting_cases_area_pt,]
   
-  rev_results_list[[length(rev_results_list) + 1]] <- data.frame(patient = pt, 
-                                                                 union_ci_low = min(interesting_res_area_pt[,"lwr"]),
-                                                                 union_ci_high = max(interesting_res_area_pt[,"upr"]), 
-                                                                 min_p_adjusted = min(interesting_res_area_pt[,"p adj"]), 
-                                                                 num_siginificant = sum(interesting_res_area_pt[,"p adj"] < 0.05 & interesting_res_area_pt[,"diff"] > 0))
+  rev_results_list[[length(rev_results_list) + 1]] <- data.frame(
+    patient = pt, 
+    union_ci_low = min(interesting_res_area_pt[,"lwr"]),
+    union_ci_high = max(interesting_res_area_pt[,"upr"]), 
+    min_p_adjusted = min(interesting_res_area_pt[,"p adj"]), 
+    num_siginificant = sum(interesting_res_area_pt[,"p adj"] < 0.05 & interesting_res_area_pt[,"diff"] > 0))
   #print(interesting_res_area_pt[interesting_res_area_pt[,"p adj"] < 0.05,])
 }
 
 rev_results <- do.call(rbind, rev_results_list)
-rev_results %>% knitr::kable(caption = paste0("Results for the potentially reversed patients. The num_significant are out of ", nrow(interesting_res_area_pt), " total tests."))
+```
+
+
+We then fit a linear model for area separately for each of those patients (focusing on the concentrations `r paste0(primary_concentration_labels, collapse = ", ")` and times > 20 only. In the table below, we then report the union of all confidence interval across all time-steps, the lowest p-value for all Kaftrio-Symkevi differences and the number of differences that are significant out of the `r nrow(interesting_res_area_pt)` total comparisons after TukeyHSD procedure.  
+
+
+```{r reversedtab}
+rev_results
 ```
 
 We see that the strictest bounds are for the 58-CF patient, where we can rule out differences larger than roughly ±0.25 on the log scale, i.e. 1.3 times increase or decrease. Data for the 20-CF patient are also somewhat consistent with no increase in Kaftrio over Symkevi, for the other candidates we have quite good suppport for improvement in Kaftrio. 
-(Note: the mixed model from the previous section predicts some improvement for Kaftrio over Symkevi for all patients)
+
+
+The mixed model for area from the previous section predicts some improvement for Kaftrio over Symkevi for all patients, but also has trouble predicting the values for the 58-CF patient well as witnessed by the posterior predictive check in Figure \@ref(fig:ppcheck58).
+
+```{r ppcheck58, fig.cap="Posterior predictive check for the area Bayesian model for patient 58-CF and times >= 40. The dark vertical bars represent the actual observed values while the underlying histogram shows model predictions. Note that for all concentrations, the predictions for Symkevi, after accounting for model uncertainty are systematically lower than the observed value, while predictions for Kaftrio are systematically higher."}
+library(bayesplot)
+pp_check_data <- raw_data_area_fit %>% filter(patient == "58-CF", time >= 40) %>% droplevels()
+pred <- posterior_predict(fit_area_vs_base_1, newdata = pp_check_data)
+group_pp <- interaction(paste0("t = ", pp_check_data$time), pp_check_data$type, sep = ":")
+
+bayesplot::pp_check(pp_check_data$log_area, pred, group = group_pp, fun = "stat_grouped", stat = "mean", binwidth = 0.005)
+```
+
+
+To summarise, there is some weak evidence that the 58-CF patient - unlike almost all other patients - actually does not respond notably better to Kaftrio than to Symkevi, possibly because of their different mutation. But we cannot completely rule out that this can be ascribed to just random variation. Only replicating the experiment with more patients with the same mutation can give us more certainty in this respect. 
