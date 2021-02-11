@@ -1,6 +1,6 @@
 ---
-title: "First report: Kaftrio® vs. Symkevi® in intestinal organoids\n Supplementary Statistical Analysis"
-abstract: "This document contains exploratory plots and formal statistical analysis for the data reported in the main manuscript. Complete source code and all data to reporduce this report are available via Zenodo, DOI: 10.5281/zenodo.4478985 "
+title: "Response to Elexacaftor/Tezacaftor/Ivacaftor in intestinal organoids derived from patients with cystic fibrosis: Supplementary Statistical Analysis"
+abstract: "This document contains exploratory plots and formal statistical analysis for the data reported in the main manuscript. Complete source code and all data to reproduce this report are available via Zenodo, DOI: 10.5281/zenodo.4478985 "
 output: 
   bookdown::pdf_document2:
 #    code_folding: hide
@@ -101,9 +101,9 @@ if(file.exists("data_orig/results_summary 20201130_new.xlsx")) {
 
 ## Is the control condition flat?
 
-Here we examine only the control (Forskolin only) condition. Figures \@ref(fig:area-control) -- \@ref(fig:auc-control)  show the behavior of individual wells while Figure  \@ref(fig:plate-avg-control) shows the plate averages 
+Here we examine only the control (forskolin only) condition. Figures \@ref(fig:area-control) -- \@ref(fig:auc-control)  show the behavior of individual wells while Figure  \@ref(fig:plate-avg-control) shows the plate averages 
 
-```{r area-control, fig.cap = "The raw area values of the control condition for each Forskolin concentration over time. Each line represents a single well."}
+```{r area-control, fig.height = unit(4, "cm"), fig.cap = "The raw area values of the control condition for each forskolin concentration over time. Each line represents a single well."}
 raw_data %>% 
   filter(type == "FskOnly") %>%
   ggplot(aes(x = time, y = area, group = interaction(patient, date, well))) + 
@@ -112,7 +112,7 @@ raw_data %>%
 
 ```
 
-```{r swell-control, fig.cap = "The swell values of the control condition for each Forskolin concentration over time. Each line represents a single well."}
+```{r swell-control, fig.height = unit(4, "cm"), fig.cap = "The swell values of the control condition for each forskolin concentration over time. Each line represents a single well."}
 raw_data %>% 
   filter(type == "FskOnly") %>%
   ggplot(aes(x = time, y = swell, group = interaction(patient, date, well))) + 
@@ -134,7 +134,7 @@ auc %>%
 ```
 
 
-```{r plate-avg-control, fig.cap = "Plate-average AUC for the control condition across all Forskolin concentrations.  Each line represents a single well plate."}
+```{r plate-avg-control, fig.cap = "Plate-average AUC for the control condition across all forskolin concentrations.  Each line represents a single well plate."}
 auc_plate_avg %>%
   filter(type == "FskOnly") %>%
   ggplot(aes(x = fsk_label, y = plate_avg_auc, group = interaction(patient, date))) +
@@ -146,7 +146,7 @@ auc_plate_avg %>%
 
 In all views of the data, the control condition is very flat, i.e. except for a 
 small number of wells, we observe
-almost no growth in the control condition except for the highest Forskolin concetration, 
+almost no growth in the control condition except for the highest forskolin concetration, 
 where the growth is still quite small. There is one well that is outlier in swell and AUC, 
 but is actually well within the range for raw area, presumably because of problematic measurement at t = 0.
 
@@ -313,7 +313,7 @@ fit_lm_auc <- lm(auc ~ fsk_label * type, data = auc %>% filter(type != "FskOnly"
 summary(fit_lm_auc)
 ```
 And the associated comparisons between Symkevi and Kaftrio using `TukeyHSD`. 
-The `diff` column represents actual expected difference in AUC between the two conditions,
+The `diff` column represents point estimate of the difference in AUC between the two conditions,
 `lwr` and `upr` are the bounds of 95% confidence interval.
 
 ```{r}
@@ -329,12 +329,12 @@ interesting_res_auc_primary <- hsd_res_auc$`fsk_label:type`[paste0(primary_conce
 ```{r}
 min_lower_auc <- min(interesting_res_auc_primary[,"lwr"])
 min_difference_auc <- min(interesting_res_auc_primary[,"diff"])
-max_difference_auc <- max(interesting_res_auc_primary[,"upr"])
+max_upr_auc <- max(interesting_res_auc_primary[,"upr"])
 mean_auc_symkevi_08 <-  auc %>% filter(type == "Symkevi", fsk_label == "0.8")  %>% pull(auc) %>% mean()
 ```
 
 
-For the AUC model we see noticeable difference between Symkevi and Kaftrio for all forskolin concentration (all p < 0.001), and the difference is large - for all of the primary concentrations (`r paste0(primary_concentration_labels, collapse = ", ")` µM) all the point estimates are larger than `round(min_difference_auc)` in favor of Kaftrio and the union of all 95% CIs is (`r round(min_difference_auc)`;`r round(min_difference_auc)`) . To put this number in perspective, the average AUC in the Symkevi condition and with forskolin concentration of 0.8 µM is `r round(mean_auc_symkevi_08)`. 
+For the AUC model we see noticeable difference between Symkevi and Kaftrio for all forskolin concentration (all p < 0.001), and the difference is large - for all of the primary concentrations (`r paste0(primary_concentration_labels, collapse = ", ")` µM) all the point estimates are larger than `r  round(min_difference_auc)` in favor of Kaftrio and the union of all 95% CIs is (`r round(min_lower_auc)`; `r round(max_upr_auc)`). To put this number in perspective, the average AUC in the Symkevi condition and with forskolin concentration of 0.8 µM is `r round(mean_auc_symkevi_08)` so the estimated difference corresponds to roughly doubling the AUC. 
 
 Next we inspect the summary of the area model:
 
@@ -355,7 +355,7 @@ Let us note that the coefficient for the are at time 0 (`log_base_area`) is fitt
 
 
 And the comparisons of interest via `TukeyHSD`. Unlike in the AUC model, in the area model, the
-`diff` column and the associated confidence intervals are on the log scale. First we list those differences where adjusted p < 0.001:
+`diff` column and the associated confidence intervals are on the log scale. The conditions are coded as "treatment:time:forskolin concentration". First we list those differences where adjusted p < 0.001:
 
 ```{r}
 hsd_res_area <- suppressWarnings(TukeyHSD(aov(fit_lm_area_base), which = c("type:time_f:fsk_label")))
@@ -390,7 +390,7 @@ min_lwr_60 <- min(interesting_res_area_primary_60[,"lwr"])
 
 
 
-For the area model we see statistically significant relative increase in area for Kaftrio over Symkevi when forskolin concentration is larger than 0.128 or when time > 10 minutes (all p < 0.001) at 60 minutes and for the primary concentrations (`r paste0(primary_concentration_labels, collapse = ", ")`) the model rules out less than `r round((exp(min_lwr_60) - 1) * 100)`% increase in area with Kaftrio over Symkevi for all forskolin concentrations. 
+For the area model we see statistically significant relative increase in area for Kaftrio over Symkevi when forskolin concentration is larger than 0.128 or when time > 10 minutes (all p < 0.001). For the primary concentrations (`r paste0(primary_concentration_labels, collapse = ", ")`) at 60 minutes, the model rules out less than `r round((exp(min_lwr_60) - 1) * 100)`% increase in area with Kaftrio over Symkevi for all forskolin concentrations. 
 
 
 ## Bayesian mixed-effects models
@@ -575,7 +575,8 @@ rev_results
 We see that the strictest bounds are for the 58-CF patient, where we can rule out differences larger than roughly ±0.25 on the log scale, i.e. 1.3 times increase or decrease. Data for the 20-CF patient are also somewhat consistent with no increase in Kaftrio over Symkevi, for the other candidates we have quite good suppport for improvement in Kaftrio. 
 
 
-The mixed model for area from the previous section predicts some improvement for Kaftrio over Symkevi for all patients, but also has trouble predicting the values for the 58-CF patient well as witnessed by the posterior predictive check in Figure \@ref(fig:ppcheck58).
+The mixed model for area from the previous section predicts some improvement for Kaftrio over Symkevi for all patients, but also has trouble explaining the values for the 58-CF patient.
+We can explore the misfit of the model by a posterior predictive check in Figure \@ref(fig:ppcheck58).
 
 ```{r ppcheck58, fig.cap="Posterior predictive check for the area Bayesian model for patient 58-CF and times >= 40. The dark vertical bars represent the actual observed values while the underlying histogram shows model predictions. Note that for all concentrations, the predictions for Symkevi, after accounting for model uncertainty are systematically lower than the observed value, while predictions for Kaftrio are systematically higher."}
 library(bayesplot)
