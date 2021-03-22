@@ -9,12 +9,14 @@ output:
 
 ```{r setup, message = FALSE, warning=FALSE, results="hide", echo=FALSE}
 library(tidyverse)
-knitr::opts_chunk$set(cache = TRUE, echo = FALSE, fig.height = unit(3.125, "cm"), fig.width = unit(10, "cm"))
+knitr::opts_chunk$set(cache = TRUE, echo = FALSE, fig.height = ggplot2::unit(3.125, "cm"), fig.width = unit(10, "cm"))
 devtools::load_all()
 library(brms)
 library(readxl)
 library(lubridate)
 library(patchwork)
+library(bayesplot)
+
 theme_set(cowplot::theme_cowplot())
 options(mc.cores = parallel::detectCores(), brms.backend = "cmdstanr")
 rstan::rstan_options(auto_write = TRUE)
@@ -77,7 +79,14 @@ if(file.exists("data_orig/results_summary 20201130_new.xlsx")) {
   summary_manual_raw <- read_excel("data_orig/results_summary 20201130_new.xlsx", range = "A1:K18") 
   summary_manual <- summary_manual_raw %>% 
     pivot_longer(cols = c(starts_with("Symkevi"), starts_with("Kaftrio")), names_to = c("type", "fsk_concentration"), values_to = "pat_avg_auc", names_sep = " ") %>%
-    mutate(fsk_concentration = gsub(",", ".", fsk_concentration, fixed = TRUE))
+    mutate(fsk_concentration = gsub(",", ".", fsk_concentration, fixed = TRUE)) %>%
+    mutate(type = case_when(type == "Symkevi" ~ "TEZ/IVA",
+                            type == "Kaftrio" ~ "ELX/TEZ/IVA",
+                            TRUE ~ NA_character_))
+  
+if(any(is.na(summary_manual$type))) {
+  stop("Bad rename")
+}
   
   matched <- auc_pat_avg %>% mutate(fsk_concentration = as.character(round(fsk_concentration, 3))) %>%
     mutate(fsk_concentration = if_else(fsk_concentration == "0.008", "0", fsk_concentration)) %>%
@@ -97,13 +106,14 @@ if(file.exists("data_orig/results_summary 20201130_new.xlsx")) {
 }
 ```
 
+
 # Checks and controls
 
 ## Is the control condition flat?
 
 Here we examine only the control (forskolin only) condition. Figures \@ref(fig:area-control) -- \@ref(fig:auc-control)  show the behavior of individual wells while Figure  \@ref(fig:plate-avg-control) shows the plate averages 
 
-```{r area-control, fig.height = unit(4, "cm"), fig.cap = "The raw area values of the control condition for each forskolin concentration over time. Each line represents a single well."}
+```{r area-control, fig.height = ggplot2::unit(3.5, "cm"), fig.cap = "The raw area values of the control condition for each forskolin concentration over time. Each line represents a single well."}
 raw_data %>% 
   filter(type == "FskOnly") %>%
   ggplot(aes(x = time, y = area, group = interaction(patient, date, well))) + 
@@ -112,7 +122,7 @@ raw_data %>%
 
 ```
 
-```{r swell-control, fig.height = unit(4, "cm"), fig.cap = "The swell values of the control condition for each forskolin concentration over time. Each line represents a single well."}
+```{r swell-control, fig.height = ggplot2::unit(3.5, "cm"), fig.cap = "The swell values of the control condition for each forskolin concentration over time. Each line represents a single well."}
 raw_data %>% 
   filter(type == "FskOnly") %>%
   ggplot(aes(x = time, y = swell, group = interaction(patient, date, well))) + 
@@ -179,14 +189,14 @@ And a pairwise comparison of all conditions using `TukeyHSD`.
 TukeyHSD(aov(fit_area0))$type
 ```
 
-There seems to be a _very small_ (several percent increase) but systematic difference in area between Kaftrio and 
-the other treatments at time 0. The difference between Symkevi and control (Foroskolin only) is not significant
+There seems to be a _very small_ (several percent increase) but systematic difference in area between ELX/TEZ/IVA and 
+the other treatments at time 0. The difference between TEZ/IVA and control (Foroskolin only) is not significant
 after correction for multiple comparisons.
 
 
 # Exploratory plots
 
-We note that across various visualisations in Figures \@ref(fig:areaallsep) -- \@ref(fig:plateavg-all), it is quite clear that the difference between control, Symkevi and Kaftrio is notable and much larger than the variability in the data.
+We note that across various visualisations in Figures \@ref(fig:areaallsep) -- \@ref(fig:plateavg-all), it is quite clear that the difference between control, TEZ/IVA and ELX/TEZ/IVA is notable and much larger than the variability in the data.
 
 ```{r fig1, fig.width=ggplot2::unit(16, "cm"), fig.height=ggplot2::unit(20, "cm")}
 # Generate Figure 1 for the manuscript
@@ -197,7 +207,7 @@ fig1 <- auc_pat_avg %>%
   ungroup() %>%
   ggplot(aes(x = fsk_label, y = pat_avg_auc, ymin = pat_avg_auc - pat_sd_auc, ymax = pat_avg_auc + pat_sd_auc, group = type)) +
     geom_point(size = 2, position = position_dodge(width = 0.2)) + geom_errorbar(width = 0.1, position = position_dodge(width = 0.2)) + geom_line(aes(linetype = type)) +
-    scale_linetype_manual(values = c("FskOnly" = "solid", "Symkevi" = "longdash", "Kaftrio" = "dotted")) + 
+    scale_linetype_manual(values = c("FskOnly" = "solid", "TEZ/IVA" = "longdash", "ELX/TEZ/IVA" = "dotted")) + 
     fsk_label_x_scale +
     scale_y_continuous("Organoid Swelling (mean AUC t0-60)") +
     facet_wrap(~patient_label, ncol = 3) + 
@@ -222,14 +232,14 @@ ggsave("fig1.png", fig1, width = ggplot2::unit(16, "cm"), height=ggplot2::unit(2
 ```
 
 
-```{r areaallsep,  fig.height = unit(4, "cm"), fig.cap="Raw area by time, treatment and forskolin concentration. Each line is a single well."}
+```{r areaallsep,  fig.height = ggplot2::unit(5, "cm"), fig.cap="Raw area by time, treatment and forskolin concentration. Each line is a single well."}
 raw_data %>% ggplot(aes(x = time, y = area, group = interaction(patient, date, well))) + 
   geom_line(alpha = 0.2) +
   facet_grid(type ~ fsk_label)
 ```
 
 
-```{r areaalloverlay, fig.height = unit(4, "cm"), fig.cap="Raw area by time, treatment and forskolin concentration, overlaid. Each line is a single well." }
+```{r areaalloverlay, fig.height = ggplot2::unit(4, "cm"), fig.cap="Raw area by time, treatment and forskolin concentration, overlaid. Each line is a single well." }
 
 type_color_scale <-   scale_color_brewer(type = "qual", guide = guide_legend(override.aes = list(alpha = 1)))
 
@@ -245,7 +255,7 @@ plot_area(raw_data)
 ```
 
 
-```{r swellallsep, fig.cap="Swell by time, treatment and forskolin concentration. Each line is a single well."}
+```{r swellallsep,fig.height = ggplot2::unit(5, "cm"),  fig.cap="Swell by time, treatment and forskolin concentration. Each line is a single well."}
 raw_data %>% 
   ggplot(aes(x = time, y = swell, group = interaction(patient, date, well))) + 
   geom_line(alpha = 0.3) +
@@ -254,7 +264,7 @@ raw_data %>%
 ```
 
 
-```{r swellalloverlay, fig.height = unit(4, "cm"),  fig.cap = "Swell by time, treatment and forskolin concentration, overlaid. Each line is a single well."}
+```{r swellalloverlay, fig.height = ggplot2::unit(4, "cm"),  fig.cap = "Swell by time, treatment and forskolin concentration, overlaid. Each line is a single well."}
 
 
 plot_swell <- function(raw_data, alpha = 0.3) {
@@ -300,7 +310,7 @@ auc_plate_avg %>%
 
 Since we have shown that the control condition is very close to completely flat and
 we cannot exactly pair control and treatment conditions, all of the models work with
-only the Symkevi and Kaftrio data.
+only the TEZ/IVA and ELX/TEZ/IVA data.
 
 ## Frequentist models
 
@@ -312,16 +322,16 @@ We use the `TukeyHSD` method to correct for multiple comparisons. First the summ
 fit_lm_auc <- lm(auc ~ fsk_label * type, data = auc %>% filter(type != "FskOnly"))
 summary(fit_lm_auc)
 ```
-And the associated comparisons between Symkevi and Kaftrio using `TukeyHSD`. 
+And the associated comparisons between TEZ/IVA and ELX/TEZ/IVA using `TukeyHSD`. 
 The `diff` column represents point estimate of the difference in AUC between the two conditions,
 `lwr` and `upr` are the bounds of 95% confidence interval.
 
 ```{r}
 hsd_res_auc <- TukeyHSD(aov(fit_lm_auc))
-interesting_res_auc <- hsd_res_auc$`fsk_label:type`[paste0(levels(auc$fsk_label), ":Kaftrio-",levels(auc$fsk_label),":Symkevi"),]
+interesting_res_auc <- hsd_res_auc$`fsk_label:type`[paste0(levels(auc$fsk_label), ":ELX/TEZ/IVA-",levels(auc$fsk_label),":TEZ/IVA"),]
 interesting_res_auc
 
-interesting_res_auc_primary <- hsd_res_auc$`fsk_label:type`[paste0(primary_concentration_labels, ":Kaftrio-",primary_concentration_labels,":Symkevi"),]
+interesting_res_auc_primary <- hsd_res_auc$`fsk_label:type`[paste0(primary_concentration_labels, ":ELX/TEZ/IVA-",primary_concentration_labels,":TEZ/IVA"),]
 
 ```
 
@@ -330,11 +340,11 @@ interesting_res_auc_primary <- hsd_res_auc$`fsk_label:type`[paste0(primary_conce
 min_lower_auc <- min(interesting_res_auc_primary[,"lwr"])
 min_difference_auc <- min(interesting_res_auc_primary[,"diff"])
 max_upr_auc <- max(interesting_res_auc_primary[,"upr"])
-mean_auc_symkevi_08 <-  auc %>% filter(type == "Symkevi", fsk_label == "0.8")  %>% pull(auc) %>% mean()
+mean_auc_symkevi_08 <-  auc %>% filter(type == "TEZ/IVA", fsk_label == "0.8")  %>% pull(auc) %>% mean()
 ```
 
 
-For the AUC model we see noticeable difference between Symkevi and Kaftrio for all forskolin concentration (all p < 0.001), and the difference is large - for all of the primary concentrations (`r paste0(primary_concentration_labels, collapse = ", ")` µM) all the point estimates are larger than `r  round(min_difference_auc)` in favor of Kaftrio and the union of all 95% CIs is (`r round(min_lower_auc)`; `r round(max_upr_auc)`). To put this number in perspective, the average AUC in the Symkevi condition and with forskolin concentration of 0.8 µM is `r round(mean_auc_symkevi_08)` so the estimated difference corresponds to roughly doubling the AUC. 
+For the AUC model we see noticeable difference between TEZ/IVA and ELX/TEZ/IVA for all forskolin concentration (all p < 0.001), and the difference is large - for all of the primary concentrations (`r paste0(primary_concentration_labels, collapse = ", ")` µM) all the point estimates are larger than `r  round(min_difference_auc)` in favor of ELX/TEZ/IVA and the union of all 95% CIs is (`r round(min_lower_auc)`; `r round(max_upr_auc)`). To put this number in perspective, the average AUC in the TEZ/IVA condition and with forskolin concentration of 0.8 µM is `r round(mean_auc_symkevi_08)` so the estimated difference corresponds to roughly doubling the AUC. 
 
 Next we inspect the summary of the area model:
 
@@ -347,7 +357,7 @@ raw_data_to_fit <- raw_data %>%
 
 
 fit_lm_area_base <- lm(log_area ~ log_base_area + type*time_f*fsk_label, data = raw_data_to_fit)
-summary(fit_lm_area_base)
+print(summary(fit_lm_area_base), signif.stars = FALSE)
 
 
 ```
@@ -360,15 +370,16 @@ And the comparisons of interest via `TukeyHSD`. Unlike in the AUC model, in the 
 ```{r}
 hsd_res_area <- suppressWarnings(TukeyHSD(aov(fit_lm_area_base), which = c("type:time_f:fsk_label")))
 interesting_cases_area <- crossing(fsk = levels(auc$fsk_label), time = levels(raw_data_to_fit$time_f)) %>%
-  mutate(name = paste0("Kaftrio:", time,":", fsk, "-Symkevi:", time, ":", fsk)) %>% 
+  mutate(name = paste0("ELX/TEZ/IVA:", time,":", fsk, "-TEZ/IVA:", time, ":", fsk)) %>% 
   pull(name)
 interesting_res_area <-  hsd_res_area$`type:time_f:fsk_label`[interesting_cases_area,]
-interesting_res_area[interesting_res_area[,"p adj"] < 1e-3,]
+
+print(interesting_res_area[interesting_res_area[,"p adj"] < 1e-3,], digits = 4)
 ```
 And here are all the remaining: 
 
 ```{r}
-interesting_res_area[interesting_res_area[,"p adj"] >= 1e-3,]
+print(interesting_res_area[interesting_res_area[,"p adj"] >= 1e-3,], digits = 4)
 
 ```
 
@@ -376,7 +387,7 @@ interesting_res_area[interesting_res_area[,"p adj"] >= 1e-3,]
 
 ```{r}
 interesting_cases_area_primary_60 <- data.frame(fsk = primary_concentration_labels, time = 60) %>%
-  mutate(name = paste0("Kaftrio:", time,":", fsk, "-Symkevi:", time, ":", fsk)) %>% 
+  mutate(name = paste0("ELX/TEZ/IVA:", time,":", fsk, "-TEZ/IVA:", time, ":", fsk)) %>% 
   pull(name)
 interesting_res_area_primary_60 <-  hsd_res_area$`type:time_f:fsk_label`[interesting_cases_area_primary_60,]
 
@@ -390,12 +401,12 @@ min_lwr_60 <- min(interesting_res_area_primary_60[,"lwr"])
 
 
 
-For the area model we see statistically significant relative increase in area for Kaftrio over Symkevi when forskolin concentration is larger than 0.128 or when time > 10 minutes (all p < 0.001). For the primary concentrations (`r paste0(primary_concentration_labels, collapse = ", ")`) at 60 minutes, the model rules out less than `r round((exp(min_lwr_60) - 1) * 100)`% increase in area with Kaftrio over Symkevi for all forskolin concentrations. 
+For the area model we see statistically significant relative increase in area for ELX/TEZ/IVA over TEZ/IVA when forskolin concentration is larger than 0.128 or when time > 10 minutes (all p < 0.001). For the primary concentrations (`r paste0(primary_concentration_labels, collapse = ", ")`) at 60 minutes, the model rules out less than `r round((exp(min_lwr_60) - 1) * 100)`% increase in area with ELX/TEZ/IVA over TEZ/IVA for all forskolin concentrations. 
 
 
 ## Bayesian mixed-effects models
 
-Similarly to the frequentist models, we test an area and an AUC model. For the area model, we add a varying intercept and varying effect of Kaftrio per patient (i.e. both the absolute growth and the effect of Kaftrio is allowed to vary between patients) and a varying intercept per each time series (i.e. the growth in each well is allowed to vary a bit). We use the `brms` package for fitting.
+Similarly to the frequentist models, we test an area and an AUC model. For the area model, we add a varying intercept and varying effect of ELX/TEZ/IVA per patient (i.e. both the absolute growth and the effect of ELX/TEZ/IVA is allowed to vary between patients) and a varying intercept per each time series (i.e. the growth in each well is allowed to vary a bit). We use the `brms` package for fitting.
 
 Below is the summary of the fitted area model:
 
@@ -421,14 +432,14 @@ fit_area_vs_base_1 <- brm_with_cache(f_area_vs_base_1, data = raw_data_area_fit,
 fit_area_vs_base_1
 ```
 
-We can then summarise the posterior credible intervals for difference between Kaftrio and Symkevi across forskolin concentrations and times (Figure \@ref(fig:resultsareabrms)) - all intervals are very far from zero, indicating strong support for Kaftrio being beneficial.
+We can then summarise the posterior credible intervals for difference between ELX/TEZ/IVA and TEZ/IVA across forskolin concentrations and times (Figure \@ref(fig:resultsareabrms)) - all intervals are very far from zero, indicating strong support for ELX/TEZ/IVA being beneficial.
 
 
-```{r resultsareabrms, fig.cap="Posterior means (points) and 95% credible intervals (lines) for the difference in logarithm of the area between Kaftrio and Symkevi for each of the main forskolin concentrations.", fig.height=2}
+```{r resultsareabrms, fig.cap="Posterior means (points) and 95% credible intervals (lines) for the difference in logarithm of the area between ELX/TEZ/IVA and TEZ/IVA for each of the main forskolin concentrations. Positive values = larger area with ELX/TEZ/IVA.", fig.height=2}
 hypotheses_area <- crossing(fsk_label = primary_concentration_labels, time = 10*(2:6)) %>%
-  mutate(hypothesis_string = paste0("typeKaftrio ", 
+  mutate(hypothesis_string = paste0("typeELXDTEZDIVA ", 
                              if_else(fsk_label == primary_concentration_labels[1], 
-                                     "", paste0(" + fsk_label",fsk_label,":typeKaftrio + fsk_label",fsk_label,":typeKaftrio:time_f", time)), " + typeKaftrio:time_f", time, " > 0"))
+                                     "", paste0(" + fsk_label",fsk_label,":typeELXDTEZDIVA + fsk_label",fsk_label,":typeELXDTEZDIVA:time_f", time)), " + typeELXDTEZDIVA:time_f", time, " > 0"))
 
 hypotheses_area_res <- brms::hypothesis(fit_area_vs_base_1, hypotheses_area$hypothesis_string, alpha = 0.025)
 
@@ -453,11 +464,11 @@ fit_auc1 <- brm_with_cache(auc ~ fsk_label * type +
 This model is somewhat problematic - AUC is mostly a multiplicative measure, but since it is defined to allow negative values, we cannot directly work with the logarithm. We do some posterior predictive checks to test the fit of the model (Figures \@ref(fig:ppcauc-sd-fsk) and \@ref(fig:ppcauc-sd-type)).
 
 ```{r ppcauc-sd-fsk, fig.cap="Posterior predictive check for the AUC Bayesian model, grouped by forskolin concentration. The dark vertical bars represent the actual observed standard deviation for each group while the underlying histogram shows model predictions of the standard deviation.", fig.height=2}
-pp_check(fit_auc1, "stat_grouped", stat = "sd", group = "fsk_label", nsamples = 4000, binwidth = 20)
+suppressWarnings(pp_check(fit_auc1, "stat_grouped", stat = "sd", group = "fsk_label", nsamples = 4000, binwidth = 20, cores = 1))
 ```
 
 ```{r ppcauc-sd-type, fig.cap="Posterior predictive check for the AUC Bayesian model, grouped by condition. The dark vertical bars represent the actual observed standard deviation for each group while the underlying histogram shows model predictions of the standard deviation.", fig.height=2}
-pp_check(fit_auc1, "stat_grouped", stat = "sd", group = "type", nsamples = 4000, binwidth = 20)
+suppressWarnings(pp_check(fit_auc1, "stat_grouped", stat = "sd", group = "type", nsamples = 4000, binwidth = 20, cores = 1))
 
 ```
 
@@ -473,25 +484,25 @@ Using the same posterior predictive checks as above (Figures \@ref(fig:ppcauc2-s
 
 
 ```{r ppcauc2-sd-fsk, fig.cap="Posterior predictive check for the second AUC Bayesian model, grouped by forskolin concentration. The dark vertical bars represent the actual observed standard deviation for each group while the underlying histogram shows model predictions of the standard deviation.", fig.height=2}
-pp_check(fit_auc2, "stat_grouped", stat = "sd", group = "fsk_label", nsamples = 4000, binwidth = 20)
+suppressWarnings(pp_check(fit_auc2, "stat_grouped", stat = "sd", group = "fsk_label", nsamples = 4000, binwidth = 20, cores = 1))
 ```
 
 
 ```{r ppcauc2-sd-type, fig.cap="Posterior predictive check for the second AUC Bayesian model, grouped by condition. The dark vertical bars represent the actual observed standard deviation for each group while the underlying histogram shows model predictions of the standard deviation.", fig.height=2}
-pp_check(fit_auc2, "stat_grouped", stat = "sd", group = "type", nsamples = 4000, binwidth = 20)
+suppressWarnings(pp_check(fit_auc2, "stat_grouped", stat = "sd", group = "type", nsamples = 4000, binwidth = 20, cores = 1))
 
 ```
 
 
 
 
-We can then summarise the posterior credible intervals for difference between Kaftrio and Symkevi across forskolin concentrations (Figure \@ref(fig:resultsaucbrms)) - all intervals are very far from zero, indicating strong support for Kaftrio being beneficial.
+We can then summarise the posterior credible intervals for difference between ELX/TEZ/IVA and TEZ/IVA across forskolin concentrations (Figure \@ref(fig:resultsaucbrms)) - all intervals are very far from zero, indicating strong support for ELX/TEZ/IVA being beneficial.
 
-```{r resultsaucbrms, fig.cap="Posterior means (points) and 95% credible intervals (lines) for the difference in AUC between Kaftrio and Symkevi for each of the main forskolin concentrations.", fig.height=2}
+```{r resultsaucbrms, fig.cap="Posterior means (points) and 95% credible intervals (lines) for the difference in AUC between ELX/TEZ/IVA and TEZ/IVA for each of the main forskolin concentrations. Positive values = larger AUC with ELX/TEZ/IVA.", fig.height=2}
 hypotheses_auc <- data.frame(fsk_label = primary_concentration_labels) %>%
-  mutate(hypothesis_string = paste0("typeKaftrio ", 
+  mutate(hypothesis_string = paste0("typeELXDTEZDIVA ", 
                              if_else(fsk_label == primary_concentration_labels[1], 
-                                     "", paste0(" + fsk_label",fsk_label,":typeKaftrio")), " > 0"))
+                                     "", paste0(" + fsk_label",fsk_label,":typeELXDTEZDIVA")), " > 0"))
 
 hypotheses_auc_res <- brms::hypothesis(fit_auc2, hypotheses_auc$hypothesis_string, alpha = 0.025)
 
@@ -502,16 +513,16 @@ hypotheses_auc_res$hypothesis %>%
 ```
 
 
-# Do some patients show worsening/no improvement on Kaftrio?
+# Do some patients show worsening/no improvement on ELX/TEZ/IVA?
 
-Figure \@ref(fig:reversed-patients) shows the swell of patients that have at least one AUC value higher for Symkevi than Kaftrio. We see that except for 58-CF all still show almost no overlap between Kaftrio and Symkevi conditions.
+Figure \@ref(fig:reversed-patients) shows the swell of patients that have at least one AUC value higher for TEZ/IVA than ELX/TEZ/IVA. We see that except for 58-CF all still show almost no overlap between ELX/TEZ/IVA and TEZ/IVA conditions.
 
 ```{r reversed-patients, fig.height= ggplot2::unit(12, "cm"), fig.width= ggplot2::unit(15, "cm"),fig.cap="Swell for all potentially reversed patients. Each line represents a single well."}
 reversed_patients <- auc_plate_avg %>% 
   filter(type != "FskOnly") %>%
   select(-plate_sd_auc) %>%
   pivot_wider(names_from = "type",values_from = "plate_avg_auc") %>%
-  filter(Symkevi > Kaftrio) %>%
+  filter(`TEZ/IVA` > `ELX/TEZ/IVA`) %>%
   pull(patient) %>% unique()
 
 full_plot <- NULL
@@ -548,7 +559,7 @@ for(pt in reversed_patients) {
   )
   
   interesting_cases_area_pt <- crossing(fsk = primary_concentration_labels, time = as.character(unique(raw_data_to_fit_reversed$time_f))) %>%
-    mutate(name = paste0("Kaftrio:", time,":", fsk, "-Symkevi:", time, ":", fsk)) %>% 
+    mutate(name = paste0("ELX/TEZ/IVA:", time,":", fsk, "-TEZ/IVA:", time, ":", fsk)) %>% 
     pull(name)
   interesting_res_area_pt <-  hsd_res_area_pt$`type:time_f:fsk_label`[interesting_cases_area_pt,]
   
@@ -565,27 +576,26 @@ rev_results <- do.call(rbind, rev_results_list)
 ```
 
 
-We then fit a linear model for area separately for each of those patients (focusing on the concentrations `r paste0(primary_concentration_labels, collapse = ", ")` and times > 20 only. In the table below, we then report the union of all confidence interval across all time-steps, the lowest p-value for all Kaftrio-Symkevi differences and the number of differences that are significant out of the `r nrow(interesting_res_area_pt)` total comparisons after TukeyHSD procedure.  
+We then fit a linear model for area separately for each of those patients (focusing on the concentrations `r paste0(primary_concentration_labels, collapse = ", ")` and times > 20 only. In the table below, we then report the union of all confidence interval across all time-steps, the lowest p-value for all ELX/TEZ/IVA-TEZ/IVA differences and the number of differences that are significant out of the `r nrow(interesting_res_area_pt)` total comparisons after TukeyHSD procedure.  
 
 
 ```{r reversedtab}
 rev_results
 ```
 
-We see that the strictest bounds are for the 58-CF patient, where we can rule out differences larger than roughly ±0.25 on the log scale, i.e. 1.3 times increase or decrease. Data for the 20-CF patient are also somewhat consistent with no increase in Kaftrio over Symkevi, for the other candidates we have quite good suppport for improvement in Kaftrio. 
+We see that the strictest bounds are for the 58-CF patient, where we can rule out differences larger than roughly ±0.25 on the log scale, i.e. 1.3 times increase or decrease. Data for the 20-CF patient are also somewhat consistent with no increase in ELX/TEZ/IVA over TEZ/IVA, for the other candidates we have quite good suppport for improvement in ELX/TEZ/IVA. 
 
 
-The mixed model for area from the previous section predicts some improvement for Kaftrio over Symkevi for all patients, but also has trouble explaining the values for the 58-CF patient.
+The mixed model for area from the previous section predicts some improvement for ELX/TEZ/IVA over TEZ/IVA for all patients, but also has trouble explaining the values for the 58-CF patient.
 We can explore the misfit of the model by a posterior predictive check in Figure \@ref(fig:ppcheck58).
 
-```{r ppcheck58, fig.cap="Posterior predictive check for the area Bayesian model for patient 58-CF and times >= 40. The dark vertical bars represent the actual observed values while the underlying histogram shows model predictions. Note that for all concentrations, the predictions for Symkevi, after accounting for model uncertainty are systematically lower than the observed value, while predictions for Kaftrio are systematically higher."}
-library(bayesplot)
+```{r ppcheck58, fig.cap="Posterior predictive check for the area Bayesian model for patient 58-CF and times >= 40. The dark vertical bars represent the actual observed values while the underlying histogram shows model predictions. Note that for all concentrations, the predictions for TEZ/IVA, after accounting for model uncertainty are systematically lower than the observed value, while predictions for ELX/TEZ/IVA are systematically higher."}
 pp_check_data <- raw_data_area_fit %>% filter(patient == "58-CF", time >= 40) %>% droplevels()
-pred <- posterior_predict(fit_area_vs_base_1, newdata = pp_check_data)
+pred <- posterior_predict(fit_area_vs_base_1, newdata = pp_check_data, cores = 1)
 group_pp <- interaction(paste0("t = ", pp_check_data$time), pp_check_data$type, sep = ":")
 
 bayesplot::pp_check(pp_check_data$log_area, pred, group = group_pp, fun = "stat_grouped", stat = "mean", binwidth = 0.005)
 ```
 
 
-To summarise, there is some weak evidence that the 58-CF patient - unlike almost all other patients - actually does not respond notably better to Kaftrio than to Symkevi, possibly because of their different mutation. But we cannot completely rule out that this can be ascribed to just random variation. Only replicating the experiment with more patients with the same mutation can give us more certainty in this respect. 
+To summarise, there is some weak evidence that the 58-CF patient - unlike almost all other patients - actually does not respond notably better to ELX/TEZ/IVA than to TEZ/IVA, possibly because of their different CFTR variant. But we cannot completely rule out that this can be ascribed to just random variation. Only replicating the experiment with more patients with the same variant can give us more certainty in this respect. 

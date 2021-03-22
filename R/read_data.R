@@ -51,13 +51,13 @@ well_mapping_2_2 <- data.frame(well = 1:96,
                                #has_445 = c(rep(16, FALSE)
                                p = c(rep("P1", 32), rep("P2", 32), rep("Other", 32)),
                                replicate = rep(letters[1:2], 48),
-                               type = c(rep("Symkevi", 16), rep("Kaftrio", 16), rep("Symkevi", 16), rep("Kaftrio", 16), rep("FskOnly", 16), rep("Other", 16)),
+                               type = c(rep("TEZ/IVA", 16), rep("ELX/TEZ/IVA", 16), rep("TEZ/IVA", 16), rep("ELX/TEZ/IVA", 16), rep("FskOnly", 16), rep("Other", 16)),
                                origin = c(rep("patient", 64), rep("ref114", 16), rep("ref117", 16))
 ) %>%
   inner_join(mix_mapping, by = "mix")
 
 well_mapping_1_3 <- well_mapping_2_2 %>%
-  mutate(type = if_else(well >= 33 & well <= 48, "Kaftrio", type),
+  mutate(type = if_else(well >= 33 & well <= 48, "ELX/TEZ/IVA", type),
          p = if_else(well >= 33 & well <= 48, "raw_data", p)
          )
 
@@ -122,7 +122,7 @@ read_area_data <- function(verbose = FALSE) {
 rebuild_factors <- function(data) {
   data %>%
     mutate(
-      type = factor(type, levels = c("FskOnly", "Symkevi", "Kaftrio")),
+      type = factor(type, levels = c("FskOnly", "TEZ/IVA", "ELX/TEZ/IVA")),
       fsk_label = factor(fsk_concentration, levels = fsk_levels, labels = as.character(round(fsk_levels, 3))),
       fsk_label_ord = factor(fsk_concentration, levels = fsk_levels, labels = as.character(round(fsk_levels, 3)), ordered = TRUE)
     )
@@ -139,7 +139,7 @@ check_data_integrity <- function(raw_data) {
   missing_duplicates <- raw_data %>% group_by(patient, origin, type, date, fsk_concentration, filename) %>% summarise(count = n(), .groups = "drop") %>%
     filter(count != 14,
            # For some, this is indeed the case
-           filename != "21-CF 20200918.xlsx" & type != "Symkevi" & fsk_concentration != 0.02048
+           filename != "21-CF 20200918.xlsx" & type != "TEZ/IVA" & fsk_concentration != 0.02048
     )
 
   if(nrow(missing_duplicates) > 0) {
