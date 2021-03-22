@@ -55,6 +55,21 @@ raw_data <- raw_data %>% compute_derived_quantitites() %>% remove_few_replicates
 
 auc <- raw_data_to_auc(raw_data)
 
+auc_plate_avg <- auc %>%
+  group_by(patient, date, fsk_concentration, fsk_label, type,filename) %>% 
+  summarise(plate_avg_auc = mean(auc), 
+            plate_sd_auc = sd(auc), .groups = "drop") %>%
+  mutate(plate_sd_auc = replace_na(plate_sd_auc, 0)) # Replacing sd for 21-CF 20200918, FSK = 0.02 where we have only one replicate :-( due to error
+
+auc_pat_avg <- auc_plate_avg %>%   
+  group_by(patient, fsk_concentration, fsk_label, type) %>% 
+  summarise(pat_avg_auc = mean(plate_avg_auc), 
+            pat_sd_auc = sd(plate_avg_auc), 
+            pat_sd_auc_prop = sqrt(mean(plate_sd_auc ^ 2) /n()), 
+            n_replicates = n(),
+            .groups = "drop")
+
+
 ```
 
 The data are checked to match the hand-derived summaries by first author.
@@ -62,20 +77,7 @@ The data are checked to match the hand-derived summaries by first author.
 ```{r}
 if(file.exists("data_orig/results_summary 20201130_new.xlsx")) {
   # Check matching to original summaries
-  auc_plate_avg <- auc %>%
-    group_by(patient, date, fsk_concentration, fsk_label, type,filename) %>% 
-    summarise(plate_avg_auc = mean(auc), 
-              plate_sd_auc = sd(auc), .groups = "drop") %>%
-    mutate(plate_sd_auc = replace_na(plate_sd_auc, 0)) # Replacing sd for 21-CF 20200918, FSK = 0.02 where we have only one replicate :-( due to error
-  
-  auc_pat_avg <- auc_plate_avg %>%   
-    group_by(patient, fsk_concentration, fsk_label, type) %>% 
-    summarise(pat_avg_auc = mean(plate_avg_auc), 
-              pat_sd_auc = sd(plate_avg_auc), 
-              pat_sd_auc_prop = sqrt(mean(plate_sd_auc ^ 2) /n()), 
-              n_replicates = n(),
-              .groups = "drop")
-  
+
   summary_manual_raw <- read_excel("data_orig/results_summary 20201130_new.xlsx", range = "A1:K18") 
   summary_manual <- summary_manual_raw %>% 
     pivot_longer(cols = c(starts_with("Symkevi"), starts_with("Kaftrio")), names_to = c("type", "fsk_concentration"), values_to = "pat_avg_auc", names_sep = " ") %>%
