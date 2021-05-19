@@ -106,7 +106,8 @@ read_area_data <- function(verbose = FALSE) {
                                     !(well == 64 & patient == "21-CF" & date == ymd("20200918")),
                                     !(well %in% c(40, 45) & patient == "68-CF" & date == ymd("20201021")),
                                     !(well %in% c(17, 48) & filename == "41-CF 20200820.xlsx"),
-                                    !(well >= 33 & well <= 72 & filename == "64-CF 20201002.xlsx")
+                                    !(well >= 33 & well <= 72 & filename == "64-CF 20201002.xlsx"),
+                                    !(well >= 33 & well <= 64 & filename == "60-CF 20210217.xlsx")
     )
 
     check_data_integrity(area_data)

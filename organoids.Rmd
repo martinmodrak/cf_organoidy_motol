@@ -75,10 +75,10 @@ auc_pat_avg <- auc_plate_avg %>%
 The data are checked to match the hand-derived summaries by first author.
 
 ```{r}
-if(file.exists("data_orig/results_summary 20201130_new.xlsx")) {
+if(file.exists("data_orig/results_summary_revize.xlsx")) {
   # Check matching to original summaries
 
-  summary_manual_raw <- read_excel("data_orig/results_summary 20201130_new.xlsx", range = "A1:K18") 
+  summary_manual_raw <- read_excel("data_orig/results_summary_revize.xlsx", range = "A1:K18") 
   summary_manual <- summary_manual_raw %>% 
     pivot_longer(cols = c(starts_with("Symkevi"), starts_with("Kaftrio")), names_to = c("type", "fsk_concentration"), values_to = "pat_avg_auc", names_sep = " ") %>%
     mutate(fsk_concentration = gsub(",", ".", fsk_concentration, fixed = TRUE)) %>%
@@ -363,7 +363,7 @@ print(summary(fit_lm_area_base), signif.stars = FALSE)
 
 
 ```
-Let us note that the coefficient for the are at time 0 (`log_base_area`) is fitted as almost exactly 1, which is a bit of support for the area model being a good fit for the data.
+Let us note that the coefficient for the area at time 0 (`log_base_area`) is fitted as almost exactly 1, which is a bit of support for the area model being a good fit for the data.
 
 
 And the comparisons of interest via `TukeyHSD`. Unlike in the AUC model, in the area model, the
@@ -476,7 +476,7 @@ suppressWarnings(pp_check(fit_auc1, "stat_grouped", stat = "sd", group = "type",
 
 We see the model has mild problems fitting the standard deviation, so we test another, more flexible model where the standard deviation is allowed to vary per treatment and forskolin concentration. Below is the summary of this second model:
 
-```{r, results="hide"}
+```{r}
 fit_auc2 <- brm_with_cache(bf(auc ~ fsk_label * type + 
   (1 + type || patient) + (1 || filename), sigma ~ type + fsk_label), data = auc_data_fit, family = "gaussian", cache_file = paste0(cache_dir, "/fit_auc2.rds"))
 fit_auc2
