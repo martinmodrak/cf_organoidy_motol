@@ -330,7 +330,9 @@ The `diff` column represents point estimate of the difference in AUC between the
 
 ```{r}
 hsd_res_auc <- TukeyHSD(aov(fit_lm_auc))
-interesting_res_auc <- hsd_res_auc$`fsk_label:type`[paste0(levels(auc$fsk_label), ":ELX/TEZ/IVA-",levels(auc$fsk_label),":TEZ/IVA"),]
+interesting_cases_auc <- paste0(levels(auc$fsk_label),
+                                ":ELX/TEZ/IVA-",levels(auc$fsk_label),":TEZ/IVA")
+interesting_res_auc <- hsd_res_auc$`fsk_label:type`[interesting_cases_auc,]
 interesting_res_auc
 
 interesting_res_auc_primary <- hsd_res_auc$`fsk_label:type`[paste0(primary_concentration_labels, ":ELX/TEZ/IVA-",primary_concentration_labels,":TEZ/IVA"),]
@@ -406,6 +408,39 @@ min_lwr_60 <- min(interesting_res_area_primary_60[,"lwr"])
 For the area model we see statistically significant relative increase in area for ELX/TEZ/IVA over TEZ/IVA when forskolin concentration is larger than 0.128 or when time > 10 minutes (all p < 0.001). For the primary concentrations (`r paste0(primary_concentration_labels, collapse = ", ")`) at 60 minutes, the model rules out less than `r round((exp(min_lwr_60) - 1) * 100)`% increase in area with ELX/TEZ/IVA over TEZ/IVA for all forskolin concentrations. 
 
 
+```{r}
+# Just to check - also doing a complete pooling across replicates, not reported now.
+
+# patient_avg_area_to_fit <- raw_data_to_fit %>% 
+#   group_by(patient, type, time_f, fsk_label) %>%
+#   summarise(avg_log_area = mean(log_area),
+#             avg_log_base_area = mean(log_base_area), .groups = "drop")
+#   
+# 
+# fit_lm_area_avg <- lm(avg_log_area ~ avg_log_base_area + type*time_f*fsk_label, data = patient_avg_area_to_fit)
+# 
+# hsd_res_area_avg <- suppressWarnings(TukeyHSD(aov(fit_lm_area_avg), which = c("type:time_f:fsk_label")))
+# interesting_res_area_avg <-  hsd_res_area_avg$`type:time_f:fsk_label`[interesting_cases_area,]
+# 
+# print(interesting_res_area_avg[interesting_res_area_avg[,"p adj"] < 1e-3,], digits = 4)
+# print(interesting_res_area_avg[interesting_res_area_avg[,"p adj"] >= 1e-3,], digits = 4)
+
+
+# patient_avg_auc_to_fit <- auc %>%
+#   filter(type != "FskOnly") %>%
+#   group_by(patient, type, fsk_label) %>%
+#   summarise(avg_auc = mean(auc), .groups = "drop")
+# 
+# 
+# fit_lm_auc_avg <- lm(avg_auc ~ fsk_label * type, data = patient_avg_auc_to_fit )
+# 
+# hsd_res_auc_avg <- suppressWarnings(TukeyHSD(aov(fit_lm_auc_avg)))
+# #interesting_res_area_avg <-  hsd_res_area_avg$`type:time_f:fsk_label`[interesting_cases_,]
+# hsd_res_auc_avg$`fsk_label:type`[interesting_cases_auc,]
+
+```
+
+
 ## Bayesian mixed-effects models
 
 Similarly to the frequentist models, we test an area and an AUC model. For the area model, we add a varying intercept and varying effect of ELX/TEZ/IVA per patient (i.e. both the absolute growth and the effect of ELX/TEZ/IVA is allowed to vary between patients) and a varying intercept per each time series (i.e. the growth in each well is allowed to vary a bit). We use the `brms` package for fitting.
@@ -448,7 +483,7 @@ hypotheses_area_res <- brms::hypothesis(fit_area_vs_base_1, hypotheses_area$hypo
 hypotheses_area_res$hypothesis %>% 
   cbind(hypotheses_area) %>% 
   ggplot(aes(x = time, y = Estimate, ymin = CI.Lower, ymax = CI.Upper)) +
-  geom_linerange() + geom_point() + geom_hline(yintercept = 0, color = "blue") + facet_wrap(~fsk_label)
+  geom_linerange() + geom_point() + geom_hline(yintercept = 0, color = "blue") + facet_wrap(~fsk_label, scales = "free_y")
 ```
 
 We also fit an AUC model where we also add varying intercept and effect for patients and a varying intercept for experiment (well plate).
